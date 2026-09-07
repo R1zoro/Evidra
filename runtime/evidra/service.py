@@ -42,7 +42,8 @@ class RuntimeService:
             self._materialize_requested_source(source, case_id, reference)
         except ValueError as error:
             return {"status": "failed", "diagnostics": [str(error)], "steps": [], "results": []}
-        run = execute_ir(ir, resolved_root)
+        workspace = self.store.get_workspace(case_id) if self.store else None
+        run = execute_ir(ir, resolved_root, workspace_root=workspace)
         response = {
             "status": run.status,
             "diagnostics": [],
@@ -68,21 +69,24 @@ class RuntimeService:
     def _materialize_requested_source(self, source: str, case_id: str, reference: str) -> None:
         if not self.store:
             return
-        materialize_match = re.search(r'(?:evidence\.materialize|copy)\s+(?:source|\w+|"[^"]+")(?:\s+as\s+"([^"]+)")?(?:\s*>\s*"?([^"\n]+)"?)?', source)
+        materialize_match = re.search(
+            r'(?:evidence\.materialize|copy)\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))(?:\s+as\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+)))?(?:\s*>\s*"?([^"\n]+)"?)?',
+            source,
+        )
         if not materialize_match:
             return
-        source_record = self.store.find_source_reference(case_id, reference)
+        src_name = materialize_match.group(1) or materialize_match.group(2) or reference
+        dest_val = materialize_match.group(3) or materialize_match.group(4)
+        source_record = self.store.find_source_reference(case_id, src_name) or self.store.find_source_reference(case_id, reference)
         workspace = self.store.get_workspace(case_id)
         if not source_record or not workspace:
             return
-        if materialize_match.group(2):
-            dest_val = materialize_match.group(2)
-        elif materialize_match.group(1):
-            val = materialize_match.group(1)
-            dest_val = val if "/" in val or "\\" in val else f"Evidence/{val}"
+        if dest_val:
+            val = dest_val.strip()
+            dest_clean = val if "/" in val or "\\" in val else f"Evidence/{val}"
         else:
-            dest_val = f"Evidence/{source_record['name']}"
-        destination = dest_val.strip().replace("\\", "/").strip("./").strip("/")
+            dest_clean = f"Evidence/{source_record['name']}"
+        destination = dest_clean.strip().replace("\\", "/").strip("./").strip("/")
         if destination.startswith("/") or ".." in Path(destination).parts:
             raise ValueError("materialization destination must be a relative path inside the case")
         target = (Path(workspace) / destination).resolve()
@@ -107,17 +111,47 @@ class RuntimeService:
     def _resolve_evidence_root(self, source: str, fallback: str | Path, case_id: str) -> tuple[str, str | Path]:
         if not self.store:
             return "EVID-001", fallback
-        match = re.search(r'evidence\.import\s+"([^"]+)"', source)
-        if not match:
+        import_match = re.search(r'evidence\.import\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))', source)
+        copy_match = re.search(r'(?:copy|evidence\.materialize)\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))', source)
+        list_match = re.search(r'files\.list\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))', source)
+
+        raw_ref = None
+        if import_match:
+            raw_ref = (import_match.group(1) or import_match.group(2)).strip()
+        elif copy_match:
+            raw_ref = (copy_match.group(1) or copy_match.group(2)).strip()
+        elif list_match:
+            raw_ref = (list_match.group(1) or list_match.group(2)).strip()
+
+        if not raw_ref or raw_ref in {"source", "working", "working_evidence"}:
             return "EVID-001", fallback
-        reference = match.group(1)
-        evidence = self.store.find_evidence_reference(case_id, reference)
+
+        ref_norm = raw_ref.replace("\\", "/")
+
+        # 1. Check existing registered evidence in store
+        evidence = self.store.find_evidence_reference(case_id, ref_norm) or self.store.find_evidence_reference(case_id, raw_ref)
         if evidence:
             return f"Evidence/{evidence['name']}", evidence["root"]
-        source_record = self.store.find_source_reference(case_id, reference)
+
+        # 2. Check existing registered source in store
+        source_record = self.store.find_source_reference(case_id, ref_norm) or self.store.find_source_reference(case_id, raw_ref)
         if source_record:
             return f"Sources/{source_record['name']}", source_record["source_path"]
-        raise ValueError(f"unknown evidence or source reference: {reference}")
+
+        # 3. Check if raw_ref or ref_norm is a real path on disk
+        p_raw = Path(raw_ref)
+        p_norm = Path(ref_norm)
+        disk_path = p_raw if p_raw.exists() else (p_norm if p_norm.exists() else None)
+
+        if disk_path and disk_path.exists():
+            resolved = disk_path.resolve()
+            source_name = resolved.name or "Source"
+            existing = self.store.find_source_reference(case_id, source_name)
+            if not existing:
+                self.store.register_source(case_id, source_name, str(resolved), f"fp-{source_name.lower()}")
+            return f"Sources/{source_name}", str(resolved)
+
+        return "EVID-001", fallback
 
 
 def _serialize_value(value: object) -> object:

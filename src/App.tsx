@@ -326,11 +326,17 @@ function Workspace() {
     void refresh();
     const defaultPath = "investigation.jocky";
     void caseFs.readFile(defaultPath).then(
-      (content) => {
-        setOpenDocs([{ path: defaultPath, name: defaultPath, content, type: "jocky" }]);
+      async (content) => {
+        if (!content) {
+          await caseFs.writeFile(defaultPath, blankSource).catch(() => {});
+          setOpenDocs([{ path: defaultPath, name: defaultPath, content: blankSource, type: "jocky" }]);
+        } else {
+          setOpenDocs([{ path: defaultPath, name: defaultPath, content, type: "jocky" }]);
+        }
         setActiveDocPath(defaultPath);
       },
-      () => {
+      async () => {
+        await caseFs.writeFile(defaultPath, blankSource).catch(() => {});
         setOpenDocs([{ path: defaultPath, name: defaultPath, content: blankSource, type: "jocky" }]);
         setActiveDocPath(defaultPath);
       }
@@ -360,7 +366,7 @@ function Workspace() {
       const newDoc: OpenDoc = {
         path: node.path,
         name: node.name,
-        content,
+        content: content ?? "",
         type: getFileType(node.name),
       };
       setOpenDocs((docs) => [...docs, newDoc]);
@@ -434,8 +440,7 @@ function Workspace() {
       } else if (dialog.type === "rename") {
         const parts = dialog.targetPath.split("/");
         parts.pop();
-        const parent = parts.join("/");
-        const newRel = parent ? `${parent}/${trimmed}` : trimmed;
+        const newRel = parts.length ? `${parts.join("/")}/${trimmed}` : trimmed;
         await caseFs.rename(dialog.targetPath, newRel);
         await refreshTree();
         setOpenDocs((docs) =>
@@ -474,6 +479,8 @@ function Workspace() {
         setSnapshot(result.snapshot);
         setSideView("SOURCES");
         setNotice(result.source.existing ? "Source was already registered." : `Registered source: Sources/${result.source.name}`);
+        await refreshTree();
+        await refresh();
       } catch (error) {
         setNotice(`Could not register source: ${error instanceof Error ? error.message : "runtime unavailable"}`);
       }
@@ -497,6 +504,8 @@ function Workspace() {
       setSnapshot(result.snapshot);
       setSideView("EVIDENCE");
       setNotice("Browser files imported into case evidence.");
+      await refreshTree();
+      await refresh();
     } catch (error) {
       setNotice(`Could not add evidence: ${error instanceof Error ? error.message : "runtime unavailable"}`);
     }
@@ -592,6 +601,8 @@ function Workspace() {
                 setContextMenu({ x: event.clientX, y: event.clientY, node });
               }}
               onRefreshTree={refreshTree}
+              onAddSource={addSource}
+              onAddEvidence={() => sourceInput.current?.click()}
               onMaterialize={materialize}
               onSelectDoc={(path) => {
                 setActiveDocPath(path);
@@ -609,65 +620,62 @@ function Workspace() {
           </aside>
         )}
 
-        <main className="main-workspace">
-          {notice && (
-            <div className="notice">
-              <span>{notice}</span>
-              <button onClick={() => setNotice("")}>×</button>
-            </div>
+        <main className="editor-stage">
+          {view === "JOCKY" && (
+            <>
+              <EditorTabs
+                openDocs={openDocs}
+                activeDocPath={activeDocPath}
+                view={view}
+                onSelect={(path) => {
+                  setActiveDocPath(path);
+                  setView("JOCKY");
+                }}
+                onClose={closeDoc}
+                onNewFile={() => setDialog({ type: "new-file", targetDir: "" })}
+                onView={setView}
+              />
+              <FileEditorView
+                doc={activeDoc}
+                onSave={saveActiveDoc}
+                onChange={updateActiveContent}
+                onRun={run}
+                onNewFile={() => setDialog({ type: "new-file", targetDir: "" })}
+              />
+            </>
           )}
 
-          {(view === "JOCKY" || view === "WORKBENCH") && (
-            <EditorTabs
-              openDocs={openDocs}
-              activeDocPath={activeDocPath}
-              view={view}
-              onSelect={(path) => {
-                setActiveDocPath(path);
-                setView("JOCKY");
-              }}
-              onClose={closeDoc}
-              onNewFile={() => setDialog({ type: "new-file", targetDir: "" })}
-              onView={setView}
+          {view === "WORKBENCH" && (
+            <Workbench
+              sourceId={snapshot?.sources?.[0]?.name}
+              onRun={run}
+              response={response}
+              onBookmarkFinding={addFinding}
             />
           )}
 
-          <div className="workspace-content">
-            <section className="primary-view">
-              {view === "JOCKY" && (
-                <FileEditorView
-                  doc={activeDoc}
-                  onSave={saveActiveDoc}
-                  onChange={updateActiveContent}
-                  onRun={run}
-                  onNewFile={() => setDialog({ type: "new-file", targetDir: "" })}
-                />
-              )}
-              {view === "WORKBENCH" && (
-                <Workbench
-                  sourceId={snapshot?.sources?.[0]?.name ?? evidence?.name}
-                  onRun={run}
-                  response={response}
-                  onBookmarkFinding={addFinding}
-                />
-              )}
-              {view === "GRAPH" && <Graph response={response} />}
-              {view === "BLOCKS" && <Blocks activeSource={activeDoc?.content ?? blankSource} />}
-              {view === "DOCS" && <Docs />}
-              {view === "HELP" && <Help />}
-            </section>
+          {view === "GRAPH" && <Graph response={response} />}
 
-            {view !== "WORKBENCH" && (
-              <Results response={response} onBookmarkFinding={addFinding} />
-            )}
-          </div>
+          {view === "BLOCKS" && <Blocks activeSource={activeDoc?.content ?? blankSource} />}
 
-          <footer className="statusbar">
-            <span>{caseName} · {caseRoot || "Workspace active"}</span>
-            <span>JOCKY v0.1.0 · {isDesktop() ? "Desktop bridge ready" : "Local API mode"}</span>
-          </footer>
+          {view === "DOCS" && <Docs />}
+
+          {view === "HELP" && <Help />}
         </main>
+
+        <Results response={response} onBookmarkFinding={addFinding} />
       </div>
+
+      <footer className="status-bar">
+        <span>● Case: {caseName}</span>
+        <span>ID: {caseId}</span>
+        <span>Docs: {openDocs.length}</span>
+        <span>Sources: {snapshot?.sources.length ?? 0}</span>
+        <span>Evidence: {snapshot?.evidence.length ?? 0}</span>
+        <span>Findings: {findings.length}</span>
+        <div className="status-spacer" />
+        <span className="status-notice">{notice || "Ready"}</span>
+      </footer>
 
       {contextMenu && (
         <div
@@ -930,6 +938,8 @@ function SidebarContent({
   onDelete,
   onContextMenu,
   onRefreshTree,
+  onAddSource,
+  onAddEvidence,
   onMaterialize,
   onSelectDoc,
 }: {
@@ -948,6 +958,8 @@ function SidebarContent({
   onDelete: (node: FsNode) => void;
   onContextMenu: (e: React.MouseEvent, node: FsNode) => void;
   onRefreshTree: () => void;
+  onAddSource: () => void;
+  onAddEvidence: () => void;
   onMaterialize: (id: string, name: string) => void;
   onSelectDoc: (path: string) => void;
 }) {
@@ -998,34 +1010,44 @@ function SidebarContent({
       )}
 
       {sideView === "SOURCES" && (
-        <LogicalList
-          empty="No source references registered. Use File → Add Source Reference to register evidence images or host roots."
-          items={snapshot?.sources.map((source) => (
-            <div className="logical-card" key={source.id}>
-              <strong>Sources/{source.name}</strong>
-              <span>{source.name}</span>
-              <small>Local reference · {source.status}</small>
-              <code>evidence.import "Sources/{source.name}"</code>
-              <button onClick={() => onMaterialize(source.id, source.name)}>
-                Materialize into case…
-              </button>
-            </div>
-          )) ?? []}
-        />
+        <div className="sidebar-scrollable-content">
+          <button className="side-action source-add-btn" onClick={onAddSource}>
+            <Icon name="plus" /> Register External Source…
+          </button>
+          <LogicalList
+            empty="No source references registered. Click above to register an evidence folder or disk image."
+            items={snapshot?.sources.map((source) => (
+              <div className="logical-card" key={source.id}>
+                <strong>Sources/{source.name}</strong>
+                <span>{source.name}</span>
+                <small>Local reference · {source.status}</small>
+                <code>evidence.import "Sources/{source.name}"</code>
+                <button onClick={() => onMaterialize(source.id, source.name)}>
+                  Materialize into case…
+                </button>
+              </div>
+            )) ?? []}
+          />
+        </div>
       )}
 
       {sideView === "EVIDENCE" && (
-        <LogicalList
-          empty="No case evidence yet. Materialize a source reference or import evidence into the case."
-          items={snapshot?.evidence.map((item) => (
-            <div className="logical-card" key={item.id}>
-              <strong>Evidence/{item.name}</strong>
-              <span>{item.name}</span>
-              <small>{item.file_count} files · {item.root}</small>
-              <code>evidence.import "Evidence/{item.name}"</code>
-            </div>
-          )) ?? []}
-        />
+        <div className="sidebar-scrollable-content">
+          <button className="side-action evidence-add-btn" onClick={onAddEvidence}>
+            <Icon name="plus" /> Import Evidence Files…
+          </button>
+          <LogicalList
+            empty="No case evidence yet. Materialize a source reference or import evidence into the case."
+            items={snapshot?.evidence.map((item) => (
+              <div className="logical-card" key={item.id}>
+                <strong>Evidence/{item.name}</strong>
+                <span>{item.name}</span>
+                <small>{item.file_count} files · {item.root}</small>
+                <code>evidence.import "Evidence/{item.name}"</code>
+              </div>
+            )) ?? []}
+          />
+        </div>
       )}
 
       {sideView === "PROCEDURES" && (
@@ -1397,11 +1419,46 @@ function Results({
   response: RuntimeExecutionResponse | null;
   onBookmarkFinding: (res: RuntimeExecutionResponse["results"][number]) => void;
 }) {
-  const result = response?.results[response.results.length - 1];
+  const [selectedResultId, setSelectedResultId] = useState<string | null>(null);
+
+  const results = response?.results ?? [];
+  const currentResult =
+    results.find((r) => r.id === selectedResultId) ??
+    results[results.length - 1];
+
   return (
     <aside className="results-pane">
-      {result ? (
-        <ResultCard result={result} context={response?.context} onBookmarkFinding={onBookmarkFinding} />
+      {results.length > 0 && (
+        <div className="results-step-selector">
+          <div className="step-selector-title">OPERATIONS ({results.length}):</div>
+          <div className="step-chips-scroll">
+            {results.map((res, idx) => {
+              const step = response?.steps.find((s) => s.operation_id === res.operation_id);
+              const isSelected = currentResult?.id === res.id;
+              return (
+                <button
+                  key={res.id}
+                  className={`step-chip ${isSelected ? "active" : ""}`}
+                  onClick={() => setSelectedResultId(res.id)}
+                  title={`${step?.capability ?? res.operation_id} → ${res.type}`}
+                >
+                  <span className="step-num">0{idx + 1}</span>
+                  <span className="step-cap">{step?.capability ?? res.operation_id}</span>
+                  <span className="step-type-pill">{res.type.replace("Collection", "")}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {currentResult ? (
+        <ResultCard
+          key={currentResult.id}
+          result={currentResult}
+          context={response?.context}
+          onBookmarkFinding={onBookmarkFinding}
+        />
       ) : (
         <ResultEmpty />
       )}
@@ -1429,11 +1486,13 @@ function ResultCard({
   onBookmarkFinding: (res: RuntimeExecutionResponse["results"][number]) => void;
 }) {
   const [tab, setTab] = useState<"structured" | "raw">("structured");
-  const values = Array.isArray(result.value) ? result.value : [result.value];
-  const columns =
-    values.length && typeof values[0] === "object" && values[0] !== null
-      ? Object.keys(values[0] as Record<string, unknown>).slice(0, 6)
-      : [];
+  const [copiedHash, setCopiedHash] = useState<string | null>(null);
+
+  const copyToClipboard = (text: string) => {
+    void navigator.clipboard.writeText(text);
+    setCopiedHash(text);
+    setTimeout(() => setCopiedHash(null), 1800);
+  };
 
   return (
     <div className="result-card">
@@ -1459,29 +1518,12 @@ function ResultCard({
         </button>
       </nav>
 
-      {tab === "structured" && columns.length > 0 ? (
-        <div className="result-table-wrap">
-          <table className="result-table">
-            <thead>
-              <tr>
-                {columns.map((column) => (
-                  <th key={column}>{column}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {values.map((val, idx) => (
-                <tr key={idx}>
-                  {columns.map((col) => (
-                    <td key={col}>{String((val as Record<string, unknown>)[col] ?? "")}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : (
+      {tab === "raw" ? (
         <pre className="result-pre">{JSON.stringify(result.value, null, 2)}</pre>
+      ) : (
+        <div className="result-content-body">
+          {renderSpecializedResult(result, copyToClipboard, copiedHash)}
+        </div>
       )}
 
       <footer>
@@ -1492,49 +1534,743 @@ function ResultCard({
   );
 }
 
+function renderSpecializedResult(
+  result: RuntimeExecutionResponse["results"][number],
+  copyToClipboard: (text: string) => void,
+  copiedHash: string | null
+) {
+  const { type, value } = result;
+
+  // 1. ArtifactCollection Renderer
+  if (type === "ArtifactCollection" && Array.isArray(value)) {
+    const items = value as Array<{
+      id: string;
+      name: string;
+      relative_path: string;
+      extension: string;
+      size_bytes: number;
+      modified_at: string;
+      sha256: string;
+    }>;
+
+    return (
+      <div className="specialized-artifact-view">
+        <div className="result-summary-bar">
+          <span>Total Artifacts: <strong>{items.length}</strong></span>
+          <span>
+            Total Size: <strong>{(items.reduce((acc, i) => acc + (i.size_bytes || 0), 0) / 1024).toFixed(1)} KB</strong>
+          </span>
+        </div>
+        <div className="result-table-wrap">
+          <table className="result-table">
+            <thead>
+              <tr>
+                <th>Artifact</th>
+                <th>Path</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>Modified (UTC)</th>
+                <th>SHA-256</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((art) => (
+                <tr key={art.id}>
+                  <td>
+                    <div className="art-name-cell">
+                      <Icon name={getFileIcon(art.name, "file")} />
+                      <strong>{art.name}</strong>
+                    </div>
+                  </td>
+                  <td><code className="path-code">{art.relative_path}</code></td>
+                  <td><span className="ext-badge">{art.extension || "none"}</span></td>
+                  <td>{art.size_bytes < 1024 ? `${art.size_bytes} B` : `${(art.size_bytes / 1024).toFixed(1)} KB`}</td>
+                  <td><small className="mono-time">{art.modified_at ? art.modified_at.replace("T", " ").replace("Z", "") : "-"}</small></td>
+                  <td>
+                    <button
+                      className="hash-copy-btn"
+                      title={art.sha256}
+                      onClick={() => copyToClipboard(art.sha256)}
+                    >
+                      <code>{art.sha256 ? `${art.sha256.slice(0, 10)}…` : "-"}</code>
+                      <small>{copiedHash === art.sha256 ? "✓" : "📋"}</small>
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. MetadataCollection Renderer
+  if (type === "MetadataCollection" && Array.isArray(value)) {
+    const records = value as Array<{
+      id: string;
+      artifact_id: string;
+      common: { name: string; path: string; size: number; type: string };
+      filesystem: { modified_at: string; read_only: boolean };
+      namespaces: {
+        archive?: {
+          entries_count?: number;
+          entries?: Array<{ name: string; size: number; compressed_size: number; is_dir: boolean }>;
+          suspicious_members?: string[];
+          is_encrypted?: boolean;
+          error?: string;
+        };
+        image?: { format: string; width: number; height: number; aspect_ratio: string };
+        binary?: { format: string; platform: string; architecture?: string; magic?: string };
+        text?: { line_count?: number; preview?: string; error?: string };
+        tabular?: { columns?: string[]; row_count?: number };
+      };
+    }>;
+
+    return (
+      <div className="specialized-metadata-view">
+        {records.map((rec) => (
+          <div className="meta-card" key={rec.id}>
+            <div className="meta-card-header">
+              <div className="meta-card-title">
+                <Icon name={getFileIcon(rec.common.name, "file")} />
+                <strong>{rec.common.name}</strong>
+                <span className="meta-id-tag">{rec.artifact_id}</span>
+              </div>
+              <div className="meta-card-badges">
+                <span className="ext-badge">{rec.common.type}</span>
+                <span className="badge completed">READ-ONLY</span>
+              </div>
+            </div>
+
+            <div className="meta-details-grid">
+              <div><small>Path:</small> <code>{rec.common.path}</code></div>
+              <div><small>Size:</small> <strong>{rec.common.size} bytes</strong></div>
+              <div><small>Modified:</small> <span>{rec.filesystem.modified_at}</span></div>
+            </div>
+
+            {/* Archive Namespace */}
+            {rec.namespaces.archive && (
+              <div className="namespace-section archive-section">
+                <div className="namespace-header">
+                  <Icon name="archive" />
+                  <strong>Archive Deep Inspection ({rec.namespaces.archive.entries_count ?? 0} members)</strong>
+                  {rec.namespaces.archive.is_encrypted && <span className="badge failed">ENCRYPTED</span>}
+                </div>
+                {rec.namespaces.archive.suspicious_members && rec.namespaces.archive.suspicious_members.length > 0 && (
+                  <div className="suspicious-alert">
+                    ⚠️ <strong>High-Risk Members:</strong> {rec.namespaces.archive.suspicious_members.join(", ")}
+                  </div>
+                )}
+                {rec.namespaces.archive.entries && rec.namespaces.archive.entries.length > 0 && (
+                  <div className="archive-entries-list">
+                    {rec.namespaces.archive.entries.map((ent, idx) => (
+                      <div className="archive-entry-item" key={idx}>
+                        <span>{ent.is_dir ? "📁" : "📄"} {ent.name}</span>
+                        <small>{ent.size} bytes</small>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Image Namespace */}
+            {rec.namespaces.image && (
+              <div className="namespace-section image-section">
+                <div className="namespace-header">
+                  <Icon name="file" />
+                  <strong>Image Metadata ({rec.namespaces.image.format})</strong>
+                </div>
+                <div className="meta-details-grid">
+                  <div><small>Dimensions:</small> <strong>{rec.namespaces.image.width} × {rec.namespaces.image.height} px</strong></div>
+                  <div><small>Aspect Ratio:</small> <span>{rec.namespaces.image.aspect_ratio}</span></div>
+                  <div><small>Format:</small> <span className="ext-badge">{rec.namespaces.image.format}</span></div>
+                </div>
+              </div>
+            )}
+
+            {/* Binary / Executable Namespace */}
+            {rec.namespaces.binary && (
+              <div className="namespace-section binary-section">
+                <div className="namespace-header">
+                  <Icon name="procedure" />
+                  <strong>Binary Format ({rec.namespaces.binary.format})</strong>
+                </div>
+                <div className="meta-details-grid">
+                  <div><small>Platform:</small> <strong>{rec.namespaces.binary.platform}</strong></div>
+                  <div><small>Format:</small> <span>{rec.namespaces.binary.format}</span></div>
+                  {rec.namespaces.binary.architecture && <div><small>Arch:</small> <span className="ext-badge">{rec.namespaces.binary.architecture}</span></div>}
+                </div>
+              </div>
+            )}
+
+            {/* Tabular Namespace */}
+            {rec.namespaces.tabular && (
+              <div className="namespace-section tabular-section">
+                <div className="namespace-header">
+                  <Icon name="csv" />
+                  <strong>Tabular Structure ({rec.namespaces.tabular.row_count} rows)</strong>
+                </div>
+                <div className="column-pills">
+                  {rec.namespaces.tabular.columns?.map((col) => (
+                    <span className="col-pill" key={col}>{col}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Text / Preview Namespace */}
+            {rec.namespaces.text && (
+              <div className="namespace-section text-section">
+                <div className="namespace-header">
+                  <Icon name="txt" />
+                  <strong>Text Content ({rec.namespaces.text.line_count} lines)</strong>
+                </div>
+                {rec.namespaces.text.preview && (
+                  <pre className="text-preview-block">{rec.namespaces.text.preview}</pre>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // 3. EventCollection or Timeline Renderer
+  if ((type === "EventCollection" || type === "Timeline") && Array.isArray(value)) {
+    const events = value as Array<{
+      id: string;
+      artifact_id?: string;
+      kind: string;
+      timestamp: string;
+      description: string;
+      level?: string;
+    }>;
+
+    return (
+      <div className="specialized-events-view">
+        <div className="result-summary-bar">
+          <span>Total Events: <strong>{events.length}</strong></span>
+          <span>Timeline Span: <strong>{events[0]?.timestamp?.slice(0, 10) ?? ""} → {events[events.length - 1]?.timestamp?.slice(0, 10) ?? ""}</strong></span>
+        </div>
+        <div className="timeline-stream">
+          {events.map((evt) => {
+            const level = evt.level || (evt.kind.includes("error") ? "ERROR" : evt.kind.includes("warn") ? "WARN" : "INFO");
+            return (
+              <div className={`timeline-row ${level.toLowerCase()}`} key={evt.id}>
+                <div className="timeline-time-col">
+                  <span className="time-badge">{evt.timestamp ? evt.timestamp.replace("T", " ").replace("Z", "") : "N/A"}</span>
+                </div>
+                <div className="timeline-bullet-col">
+                  <div className={`timeline-dot ${level.toLowerCase()}`} />
+                </div>
+                <div className="timeline-content-col">
+                  <div className="timeline-content-header">
+                    <span className={`event-kind-tag ${evt.kind.replace(".", "-")}`}>{evt.kind}</span>
+                    {evt.artifact_id && <span className="art-ref-pill">{evt.artifact_id}</span>}
+                    <span className={`level-pill ${level.toLowerCase()}`}>{level}</span>
+                  </div>
+                  <div className="timeline-desc">{evt.description}</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  // 4. FindingCollection Renderer
+  if (type === "FindingCollection" && Array.isArray(value)) {
+    const findings = value as Array<{
+      id: string;
+      title?: string;
+      severity: string;
+      kind?: string;
+      summary: string;
+      confidence?: number;
+      artifact_refs?: string[];
+      event_refs?: string[];
+      indicators?: string[];
+      evidence_sources?: string[];
+    }>;
+
+    return (
+      <div className="specialized-findings-view">
+        <div className="result-summary-bar">
+          <span>Correlated Findings: <strong>{findings.length}</strong></span>
+          <span>High Severity: <strong>{findings.filter((f) => f.severity === "HIGH").length}</strong></span>
+        </div>
+        <div className="findings-stream">
+          {findings.map((fnd) => (
+            <div className={`forensic-finding-card severity-${fnd.severity.toLowerCase()}`} key={fnd.id}>
+              <div className="fnd-header">
+                <div className="fnd-title-wrap">
+                  <span className={`fnd-severity-pill ${fnd.severity.toLowerCase()}`}>{fnd.severity}</span>
+                  <strong>{fnd.title || fnd.id}</strong>
+                </div>
+                {fnd.confidence && (
+                  <div className="fnd-confidence">
+                    <small>Confidence:</small>
+                    <span className="confidence-meter">{(fnd.confidence * 100).toFixed(0)}%</span>
+                  </div>
+                )}
+              </div>
+
+              <p className="fnd-summary-text">{fnd.summary}</p>
+
+              {fnd.indicators && fnd.indicators.length > 0 && (
+                <div className="fnd-indicators">
+                  <small>KEY INDICATORS & ARTIFACT STRINGS:</small>
+                  <div className="indicators-chip-list">
+                    {fnd.indicators.map((ind, i) => (
+                      <span className="indicator-chip" key={i}>{ind}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="fnd-refs-footer">
+                {fnd.artifact_refs && fnd.artifact_refs.length > 0 && (
+                  <div className="ref-group">
+                    <small>Artifacts:</small>
+                    {fnd.artifact_refs.map((ref) => (
+                      <span className="ref-tag" key={ref}>{ref}</span>
+                    ))}
+                  </div>
+                )}
+                {fnd.event_refs && fnd.event_refs.length > 0 && (
+                  <div className="ref-group">
+                    <small>Events ({fnd.event_refs.length}):</small>
+                    {fnd.event_refs.slice(0, 5).map((ref) => (
+                      <span className="ref-tag event-tag" key={ref}>{ref}</span>
+                    ))}
+                    {fnd.event_refs.length > 5 && <span className="ref-tag more">+{fnd.event_refs.length - 5} more</span>}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  // 5. Export Result Renderer
+  if (type === "Export" && typeof value === "object" && value !== null) {
+    const exp = value as {
+      status?: string;
+      destination?: string;
+      file_path?: string;
+      relative_path?: string;
+      records_count?: number;
+      size_bytes?: number;
+      sha256?: string;
+    };
+
+    return (
+      <div className="specialized-export-view">
+        <div className="export-success-box">
+          <div className="export-icon">💾</div>
+          <div className="export-info">
+            <strong>Export Written to Workspace</strong>
+            <span>Destination: <code>{exp.destination || exp.relative_path}</code></span>
+          </div>
+        </div>
+        <div className="export-details-grid">
+          <div><small>Full Disk Path:</small> <code className="path-code">{exp.file_path}</code></div>
+          <div><small>Records Exported:</small> <strong>{exp.records_count}</strong></div>
+          <div><small>File Size:</small> <strong>{exp.size_bytes} bytes</strong></div>
+          <div>
+            <small>SHA-256:</small>
+            <button className="hash-copy-btn" onClick={() => copyToClipboard(exp.sha256 || "")}>
+              <code>{exp.sha256}</code>
+              <small>{copiedHash === exp.sha256 ? "✓" : "📋"}</small>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Fallback Generic Table View
+  const values = Array.isArray(value) ? value : [value];
+  const columns =
+    values.length && typeof values[0] === "object" && values[0] !== null
+      ? Object.keys(values[0] as Record<string, unknown>).slice(0, 6)
+      : [];
+
+  if (columns.length > 0) {
+    return (
+      <div className="result-table-wrap">
+        <table className="result-table">
+          <thead>
+            <tr>
+              {columns.map((column) => (
+                <th key={column}>{column}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {values.map((val, idx) => (
+              <tr key={idx}>
+                {columns.map((col) => (
+                  <td key={col}>{String((val as Record<string, unknown>)[col] ?? "")}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  return <pre className="result-pre">{JSON.stringify(value, null, 2)}</pre>;
+}
+
+type GraphMode = "pipeline" | "tree";
+
+function GraphNode({
+  id,
+  label,
+  sub,
+  kind,
+  typeStr,
+  count,
+  selected,
+  onSelect,
+  children,
+}: {
+  id: string;
+  label: string;
+  sub?: string;
+  kind: "source" | "op" | "result";
+  typeStr?: string;
+  count?: number;
+  selected?: boolean;
+  onSelect: (id: string) => void;
+  children?: ReactNode;
+}) {
+  const typeClass = typeStr
+    ? typeStr.toLowerCase().replace("collection", "").trim() + "-type"
+    : "";
+
+  return (
+    <div
+      id={id}
+      className={`graph-card-node ${kind}-card ${typeClass} ${selected ? "selected" : ""}`}
+      onClick={() => onSelect(id)}
+    >
+      <div className="graph-card-head">
+        <span className="graph-card-type">{kind === "source" ? "EVIDENCE" : kind === "op" ? "CAPABILITY" : typeStr ?? "RESULT"}</span>
+        {count !== undefined && <span className="graph-badge-pill">{count} items</span>}
+      </div>
+      <div className="graph-card-title">{label}</div>
+      {sub && <div className="graph-card-detail">{sub}</div>}
+      {children}
+    </div>
+  );
+}
+
+function BezierEdge({
+  fromId,
+  toId,
+  containerRef,
+  zoom,
+}: {
+  fromId: string;
+  toId: string;
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  zoom: number;
+}) {
+  const [path, setPath] = useState("");
+
+  useEffect(() => {
+    const calculate = () => {
+      if (!containerRef.current) return;
+      const container = containerRef.current;
+      const scaler = container.querySelector<HTMLDivElement>(".graph-content-scaler");
+      if (!scaler) return;
+      const sRect = scaler.getBoundingClientRect();
+      const fromEl = container.querySelector(`#${fromId}`);
+      const toEl = container.querySelector(`#${toId}`);
+      if (!fromEl || !toEl) return;
+      const fRect = fromEl.getBoundingClientRect();
+      const tRect = toEl.getBoundingClientRect();
+
+      const x1 = (fRect.right - sRect.left) / zoom;
+      const y1 = (fRect.top + fRect.height / 2 - sRect.top) / zoom;
+      const x2 = (tRect.left - sRect.left) / zoom;
+      const y2 = (tRect.top + tRect.height / 2 - sRect.top) / zoom;
+
+      const dx = Math.max(40, (x2 - x1) * 0.45);
+      const cx1 = x1 + dx;
+      const cy1 = y1;
+      const cx2 = x2 - dx;
+      const cy2 = y2;
+      setPath(`M ${x1} ${y1} C ${cx1} ${cy1}, ${cx2} ${cy2}, ${x2} ${y2}`);
+    };
+
+    calculate();
+    const timer = setTimeout(calculate, 100);
+    const handleScroll = () => calculate();
+    const container = containerRef.current;
+    if (container) container.addEventListener("scroll", handleScroll);
+    window.addEventListener("resize", calculate);
+    return () => {
+      clearTimeout(timer);
+      if (container) container.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("resize", calculate);
+    };
+  }, [fromId, toId, containerRef, zoom]);
+
+  if (!path) return null;
+  return (
+    <svg
+      className="graph-svg-layer"
+      style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 1, overflow: "visible" }}
+    >
+      <defs>
+        <marker id="arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+          <polygon points="0 0, 7 3.5, 0 7" fill="#6b9eb8" />
+        </marker>
+      </defs>
+      <path d={path} className="graph-bezier-path" markerEnd="url(#arr)" />
+    </svg>
+  );
+}
+
 function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
+  const [graphMode, setGraphMode] = useState<GraphMode>("pipeline");
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(["artifacts"]));
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+
   if (!response) {
     return (
       <div className="placeholder">
         <small>INVESTIGATION GRAPH</small>
         <h1>No Graph Lineage</h1>
-        <p>Run a JOCKY procedure to trace how source evidence lowers through capabilities into typed results and findings.</p>
+        <p>Run a JOCKY procedure to trace how source evidence flows through capabilities into typed results and findings.</p>
       </div>
     );
   }
 
-  return (
-    <div className="placeholder">
-      <small>GRAPH · LINEAGE & PROVENANCE</small>
-      <h1>Investigation Provenance Graph</h1>
-      <p>Demonstrates data flow: <strong>Evidence Source → Operation Capability → Typed Result → Findings</strong>.</p>
-      <div className="run-graph">
-        <div className="graph-object source-node">
-          <Icon name="evidence" />
-          <strong>{response.context?.source_reference ?? "Evidence Source"}</strong>
+  const srcRef = response.context?.source_reference ?? "EVID-001";
+  const srcName = response.context?.source_path
+    ? response.context.source_path.split(/[/\\]/).pop()
+    : "Evidence Root";
+
+  const toggleFolder = (key: string) => {
+    setExpandedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  /* ── Pipeline Lineage Graph ── */
+  if (graphMode === "pipeline") {
+    const edges: { from: string; to: string }[] = [];
+    response.results.forEach((r, i) => {
+      if (i === 0) {
+        edges.push({ from: "node-source", to: `node-op-${r.id}` });
+      } else {
+        edges.push({ from: `node-result-${response.results[i - 1].id}`, to: `node-op-${r.id}` });
+      }
+      edges.push({ from: `node-op-${r.id}`, to: `node-result-${r.id}` });
+    });
+
+    return (
+      <div className="graph-view-wrapper">
+        <div className="graph-top-toolbar">
+          <div className="graph-title-group">
+            <small>INVESTIGATION GRAPH</small>
+            <h2>Pipeline Lineage Graph</h2>
+          </div>
+          <div className="graph-mode-switch">
+            <button className="graph-mode-btn active">⌘ Pipeline</button>
+            <button className="graph-mode-btn" onClick={() => setGraphMode("tree")}>◇ Evidence Tree</button>
+          </div>
+          <div className="graph-controls-group">
+            <button className="graph-zoom-btn" onClick={() => setZoom((z) => Math.min(z + 0.15, 2))}>＋ Zoom</button>
+            <button className="graph-zoom-btn" onClick={() => setZoom((z) => Math.max(z - 0.15, 0.4))}>－ Zoom</button>
+            <button className="graph-zoom-btn" onClick={() => setZoom(1)}>↺ Reset</button>
+          </div>
         </div>
-        {response.results.map((result) => {
-          const step = response.steps.find((s) => s.operation_id === result.operation_id);
-          return (
-            <div className="graph-chain" key={result.id}>
-              <span>→</span>
-              <div className="graph-object operation-node">
-                <small>OPERATION</small>
-                <strong>{step?.capability ?? result.operation_id}</strong>
+
+        <div className="graph-canvas-container" ref={canvasRef}>
+          <div className="graph-content-scaler" style={{ transform: `scale(${zoom})` }}>
+            <div className="graph-nodes-layer">
+              {/* Source Column */}
+              <div className="graph-stage-column">
+                <div className="graph-stage-header">Source <span className="graph-stage-badge">1</span></div>
+                <GraphNode id="node-source" label={srcRef} sub={srcName} kind="source" selected={selectedNodeId === "node-source"} onSelect={setSelectedNodeId} />
               </div>
-              <span>→</span>
-              <div className="graph-object result-node">
-                <small>{result.type}</small>
-                <strong>{result.id}</strong>
-                <span className={`status-tag ${result.status}`}>{result.status}</span>
+
+              {/* Per-result columns */}
+              {response.results.map((result) => {
+                const step = response.steps.find((s) => s.operation_id === result.operation_id);
+                const cap = step?.capability ?? result.operation_id ?? "operation";
+                const count = Array.isArray(result.value) ? result.value.length : undefined;
+                return (
+                  <div className="graph-stage-column" key={result.id}>
+                    <div className="graph-stage-header">
+                      {cap} <span className="graph-stage-badge">{result.type.replace("Collection", "")}</span>
+                    </div>
+                    <GraphNode id={`node-op-${result.id}`} label={cap} sub={result.operation_id} kind="op" selected={selectedNodeId === `node-op-${result.id}`} onSelect={setSelectedNodeId} />
+                    <GraphNode id={`node-result-${result.id}`} label={result.id} sub={result.status} kind="result" typeStr={result.type} count={count} selected={selectedNodeId === `node-result-${result.id}`} onSelect={setSelectedNodeId} />
+                  </div>
+                );
+              })}
+            </div>
+
+            {edges.map((e, idx) => (
+              <BezierEdge key={idx} fromId={e.from} toId={e.to} containerRef={canvasRef} zoom={zoom} />
+            ))}
+          </div>
+        </div>
+
+        <div className="graph-bottom-legend">
+          <span className="legend-item"><span className="legend-color-dot source" /> Evidence Source</span>
+          <span className="legend-item"><span className="legend-color-dot op" /> Capability</span>
+          <span className="legend-item"><span className="legend-color-dot artifact" /> ArtifactCollection</span>
+          <span className="legend-item"><span className="legend-color-dot meta" /> MetadataCollection</span>
+          <span className="legend-item"><span className="legend-color-dot event" /> EventCollection</span>
+          <span className="legend-item"><span className="legend-color-dot finding" /> FindingCollection</span>
+          <span className="legend-item"><span className="legend-color-dot export" /> Export</span>
+        </div>
+      </div>
+    );
+  }
+
+  /* ── Evidence & Artifact Tree Graph ── */
+  const artifactResult = response.results.find((r) => r.type === "ArtifactCollection" && Array.isArray(r.value));
+  const artifacts = (artifactResult?.value as Array<{ id: string; name: string; extension: string; size_bytes: number }> | undefined) ?? [];
+
+  const extGroups: Record<string, typeof artifacts> = {};
+  for (const art of artifacts) {
+    const grp = art.extension || "other";
+    if (!extGroups[grp]) extGroups[grp] = [];
+    extGroups[grp].push(art);
+  }
+
+  const treeEdges = response.results.map((r) => ({ from: "tree-evidence-node", to: `tree-result-${r.id}` }));
+
+  return (
+    <div className="graph-view-wrapper">
+      <div className="graph-top-toolbar">
+        <div className="graph-title-group">
+          <small>INVESTIGATION GRAPH</small>
+          <h2>Evidence &amp; Artifact Tree</h2>
+        </div>
+        <div className="graph-mode-switch">
+          <button className="graph-mode-btn" onClick={() => setGraphMode("pipeline")}>⌘ Pipeline</button>
+          <button className="graph-mode-btn active">◇ Evidence Tree</button>
+        </div>
+        <div className="graph-controls-group">
+          <button className="graph-zoom-btn" onClick={() => setZoom((z) => Math.min(z + 0.15, 2))}>＋ Zoom</button>
+          <button className="graph-zoom-btn" onClick={() => setZoom((z) => Math.max(z - 0.15, 0.4))}>－ Zoom</button>
+          <button className="graph-zoom-btn" onClick={() => setZoom(1)}>↺ Reset</button>
+        </div>
+      </div>
+
+      <div className="graph-canvas-container" ref={canvasRef}>
+        <div className="graph-content-scaler" style={{ transform: `scale(${zoom})` }}>
+          <div className="graph-nodes-layer" style={{ alignItems: "flex-start", gap: 56 }}>
+
+            {/* Evidence root with expandable tree */}
+            <div className="graph-stage-column" style={{ minWidth: 260, maxWidth: 320 }}>
+              <div className="graph-stage-header">Evidence Root <span className="graph-stage-badge">{artifacts.length} files</span></div>
+              <div
+                id="tree-evidence-node"
+                className={`graph-card-node source-card ${selectedNodeId === "tree-evidence-node" ? "selected" : ""}`}
+                onClick={() => setSelectedNodeId("tree-evidence-node")}
+              >
+                <div className="graph-card-head">
+                  <span className="graph-card-type">EVIDENCE SOURCE</span>
+                  <span className="graph-badge-pill">{srcRef}</span>
+                </div>
+                <div className="graph-card-title"><Icon name="evidence" /> {srcName}</div>
+
+                {artifacts.length > 0 && (
+                  <div className="graph-tree-container">
+                    {Object.entries(extGroups).map(([ext, arts]) => {
+                      const folderKey = `ext-${ext}`;
+                      const isOpen = expandedFolders.has(folderKey);
+                      return (
+                        <div className="graph-tree-folder" key={ext}>
+                          <div className="graph-tree-folder-head" onClick={(e) => { e.stopPropagation(); toggleFolder(folderKey); }}>
+                            {isOpen ? "▼" : "▶"} <Icon name={isOpen ? "folderOpen" : "folder"} />
+                            <span>.{ext}</span>
+                            <span className="graph-badge-pill" style={{ marginLeft: "auto" }}>{arts.length}</span>
+                          </div>
+                          {isOpen && arts.map((art) => (
+                            <div
+                              key={art.id}
+                              className={`graph-tree-file-item ${selectedNodeId === art.id ? "selected" : ""}`}
+                              onClick={(e) => { e.stopPropagation(); setSelectedNodeId(art.id); }}
+                            >
+                              <span><Icon name="file" /> {art.name}</span>
+                              <span className="graph-file-size">{art.size_bytes < 1024 ? `${art.size_bytes}B` : `${(art.size_bytes / 1024).toFixed(1)}K`}</span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             </div>
-          );
-        })}
+
+            {/* Analysis columns */}
+            <div className="graph-stage-column" style={{ gap: 20 }}>
+              <div className="graph-stage-header">Analysis &amp; Outputs <span className="graph-stage-badge">{response.results.length} ops</span></div>
+              {response.results.map((result) => {
+                const step = response.steps.find((s) => s.operation_id === result.operation_id);
+                const cap = step?.capability ?? result.operation_id ?? "operation";
+                const count = Array.isArray(result.value) ? result.value.length : undefined;
+                const typeKey = result.type.toLowerCase().replace("collection", "").trim();
+                return (
+                  <div
+                    key={result.id}
+                    id={`tree-result-${result.id}`}
+                    className={`graph-card-node result-card-node ${typeKey}-type ${selectedNodeId === result.id ? "selected" : ""}`}
+                    onClick={() => setSelectedNodeId(result.id)}
+                  >
+                    <div className="graph-card-head">
+                      <span className="graph-card-type">{result.type}</span>
+                      {count !== undefined && <span className="graph-badge-pill">{count} items</span>}
+                    </div>
+                    <div className="graph-card-title">{cap}</div>
+                    <div className="graph-card-detail">{result.id} · {result.status}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {treeEdges.map((e, idx) => (
+            <BezierEdge key={idx} fromId={e.from} toId={e.to} containerRef={canvasRef} zoom={zoom} />
+          ))}
+        </div>
+      </div>
+
+      <div className="graph-bottom-legend">
+        <span className="legend-item"><span className="legend-color-dot source" /> Evidence Source</span>
+        <span className="legend-item"><span className="legend-color-dot artifact" /> Artifact</span>
+        <span className="legend-item"><span className="legend-color-dot meta" /> Metadata</span>
+        <span className="legend-item"><span className="legend-color-dot event" /> Events</span>
+        <span className="legend-item"><span className="legend-color-dot finding" /> Findings</span>
+        <span style={{ marginLeft: "auto", fontStyle: "italic", fontSize: 8 }}>Click nodes · Expand tree folders</span>
       </div>
     </div>
   );
 }
+
 
 function Blocks({ activeSource }: { activeSource: string }) {
   const blocks: Array<{ name: string; operations: string[] }> = [];
@@ -1591,30 +2327,230 @@ function Blocks({ activeSource }: { activeSource: string }) {
 }
 
 function Docs() {
+  const [copiedScript, setCopiedScript] = useState(false);
+
+  const demoScript = `# JOCKY Forensic Investigation Procedure
+# SIH Problem Statement 26148 - Digital Forensics DSL
+
+[prepare]
+    source = evidence.import "C:\\Users\\XYLA\\Downloads\\Valora"
+    working = copy source as "working_evidence"
+
+[examine]
+    artifacts = files.list working
+    suspicious = filter(extension == ".zip" | ".elf" | ".exe" | ".png") from artifacts
+    metadata = metadata.extract suspicious
+
+[analysis]
+    events = events.extract from artifacts
+    timeline = timeline.build from events
+    findings = correlate(suspicious, metadata, events)
+
+[export]
+    export findings > "./Outputs/findings.json"`;
+
+  const copyScript = () => {
+    void navigator.clipboard.writeText(demoScript);
+    setCopiedScript(true);
+    setTimeout(() => setCopiedScript(false), 2000);
+  };
+
   return (
-    <div className="placeholder docs">
-      <small>JOCKY REFERENCE</small>
-      <h1>Language & Capability Contract</h1>
-      <div>
-        <strong>Stages & Scopes</strong>
-        <code>[prepare]</code>
-        <code>[examine]</code>
-        <code>[analysis]</code>
-        <code>[export]</code>
-        <strong>Evidence Lifecycle</strong>
-        <code>evidence.import "Sources/host.img" as EVID-001</code>
-        <code>working = copy EVID-001 as "working"</code>
-        <code>hash working</code>
-        <strong>Artifacts & Filtering</strong>
-        <code>artifacts = files.list working</code>
-        <code>suspicious = filter(extension == ".zip" | ".elf") from artifacts</code>
-        <strong>Analysis & Correlation</strong>
-        <code>metadata = metadata.extract suspicious</code>
-        <code>events = events.extract from artifacts</code>
-        <code>findings = correlate(suspicious, metadata, events)</code>
-        <strong>Exporting</strong>
-        <code>export findings &gt; "./Outputs/findings.json"</code>
-      </div>
+    <div className="docs-view">
+      <header className="docs-header">
+        <small>EVIDRA · JOCKY DOMAIN-SPECIFIC LANGUAGE</small>
+        <h1>JOCKY Specification, Rules & Capabilities</h1>
+        <p>Reference guide for non-destructive digital forensic automation, deterministic lowering, and multi-vector correlation.</p>
+      </header>
+
+      {/* 1. Core Principles & Philosophy */}
+      <section className="docs-section">
+        <h2>1. Investigation Lifecycle & Architectural Rules</h2>
+        <p>
+          JOCKY structures digital forensic procedures into four deterministic stages aligned with standard forensic frameworks (NIST SP 800-86 & ISO/IEC 27037):
+        </p>
+        <table className="docs-table">
+          <thead>
+            <tr>
+              <th>Stage</th>
+              <th>Investigative Scope</th>
+              <th>Permitted Actions & Invariants</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>[prepare]</code></td>
+              <td>Evidence Registration</td>
+              <td>Read-only external source registration (<code>evidence.import</code>) and cryptographic materialization (<code>copy ... as</code>). Original evidence is never modified.</td>
+            </tr>
+            <tr>
+              <td><code>[examine]</code></td>
+              <td>Artifact Enumeration & Triage</td>
+              <td>Artifact discovery (<code>files.list</code>), criteria-based narrowing (<code>filter</code>, <code>files.search</code>), and normalized metadata extraction (<code>metadata.extract</code>).</td>
+            </tr>
+            <tr>
+              <td><code>[analysis]</code></td>
+              <td>Event Reconstruction & Correlation</td>
+              <td>Timestamped event extraction (<code>events.extract</code>), timeline sequencing (<code>timeline.build</code>), and cross-collection correlation (<code>correlate</code>).</td>
+            </tr>
+            <tr>
+              <td><code>[export]</code></td>
+              <td>Reporting & Persistence</td>
+              <td>Deterministic export of typed findings, timelines, or artifact manifests to the active workspace (<code>export &gt; "./path.json"</code>).</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      {/* 2. Standard Capability Catalog */}
+      <section className="docs-section">
+        <h2>2. Forensic Capability Reference Table</h2>
+        <p>All JOCKY operations map to typed Investigation IR capabilities executed through auditable local providers:</p>
+        <table className="docs-table">
+          <thead>
+            <tr>
+              <th>Capability</th>
+              <th>Input Type</th>
+              <th>Output Type</th>
+              <th>Syntax Example</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>evidence.import</code></td>
+              <td>String Path</td>
+              <td><code>EvidenceReference</code></td>
+              <td><code>source = evidence.import "C:\\path\\evidence"</code></td>
+            </tr>
+            <tr>
+              <td><code>copy</code></td>
+              <td><code>EvidenceReference</code></td>
+              <td><code>EvidenceReference</code></td>
+              <td><code>working = copy source as "working_evidence"</code></td>
+            </tr>
+            <tr>
+              <td><code>hash</code></td>
+              <td><code>EvidenceReference</code> | <code>ArtifactCollection</code></td>
+              <td><code>IntegrityRecord</code></td>
+              <td><code>hash working</code></td>
+            </tr>
+            <tr>
+              <td><code>files.list</code></td>
+              <td><code>EvidenceReference</code></td>
+              <td><code>ArtifactCollection</code></td>
+              <td><code>artifacts = files.list working</code></td>
+            </tr>
+            <tr>
+              <td><code>filter</code></td>
+              <td><code>ArtifactCollection</code></td>
+              <td><code>ArtifactCollection</code></td>
+              <td><code>suspicious = filter(extension == ".zip" | ".exe") from artifacts</code></td>
+            </tr>
+            <tr>
+              <td><code>files.search</code></td>
+              <td><code>ArtifactCollection</code></td>
+              <td><code>ArtifactCollection</code></td>
+              <td><code>logs = files.search "*.log" from artifacts</code></td>
+            </tr>
+            <tr>
+              <td><code>metadata.extract</code></td>
+              <td><code>ArtifactCollection</code></td>
+              <td><code>MetadataCollection</code></td>
+              <td><code>metadata = metadata.extract suspicious</code></td>
+            </tr>
+            <tr>
+              <td><code>events.extract</code></td>
+              <td><code>ArtifactCollection</code></td>
+              <td><code>EventCollection</code></td>
+              <td><code>events = events.extract from artifacts</code></td>
+            </tr>
+            <tr>
+              <td><code>timeline.build</code></td>
+              <td><code>EventCollection</code></td>
+              <td><code>Timeline</code></td>
+              <td><code>timeline = timeline.build from events</code></td>
+            </tr>
+            <tr>
+              <td><code>correlate</code></td>
+              <td>Multiple Collections</td>
+              <td><code>FindingCollection</code></td>
+              <td><code>findings = correlate(suspicious, metadata, events)</code></td>
+            </tr>
+            <tr>
+              <td><code>export</code></td>
+              <td>Any Collection</td>
+              <td><code>Export</code></td>
+              <td><code>export findings &gt; "./Outputs/findings.json"</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      {/* 3. Normalized Metadata Schema */}
+      <section className="docs-section">
+        <h2>3. Normalized Metadata Contract</h2>
+        <p>
+          <code>metadata.extract</code> returns a structured <code>MetadataCollection</code> populated by provider capabilities:
+        </p>
+        <table className="docs-table">
+          <thead>
+            <tr>
+              <th>Namespace</th>
+              <th>Target File Types</th>
+              <th>Extracted Forensic Fields</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>common</code></td>
+              <td>All artifacts</td>
+              <td><code>name</code>, <code>relative_path</code>, <code>size_bytes</code>, <code>extension</code>, <code>sha256</code></td>
+            </tr>
+            <tr>
+              <td><code>filesystem</code></td>
+              <td>All artifacts</td>
+              <td><code>modified_at</code> (ISO 8601 UTC), <code>read_only: true</code></td>
+            </tr>
+            <tr>
+              <td><code>archive</code></td>
+              <td><code>.zip</code>, compressed containers</td>
+              <td><code>entries_count</code>, member listing, compressed/uncompressed sizes, encryption status, high-risk member alerts (<code>.ps1</code>, <code>.bat</code>, <code>.exe</code>, passwords)</td>
+            </tr>
+            <tr>
+              <td><code>image</code></td>
+              <td><code>.png</code>, <code>.jpg</code>, <code>.bmp</code>, <code>.gif</code></td>
+              <td>Image dimensions (<code>width × height</code>), <code>aspect_ratio</code>, container format</td>
+            </tr>
+            <tr>
+              <td><code>binary</code></td>
+              <td><code>.exe</code>, <code>.dll</code>, <code>.elf</code></td>
+              <td>Binary format (<code>PE/COFF</code>, <code>ELF</code>), platform, architecture (32/64-bit), magic headers</td>
+            </tr>
+            <tr>
+              <td><code>tabular</code></td>
+              <td><code>.csv</code></td>
+              <td>Header column schema, row counts</td>
+            </tr>
+            <tr>
+              <td><code>text</code></td>
+              <td><code>.log</code>, <code>.txt</code>, <code>.md</code>, <code>.json</code></td>
+              <td>Line counts, UTF-8 preview text snippet</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+
+      {/* 4. Complete Presentation Script */}
+      <section className="docs-section">
+        <h2>4. Live Judge Demonstration Script</h2>
+        <p>Copy and run this verified end-to-end investigation procedure during the demonstration:</p>
+        <div className="docs-code-card">
+          <button className="copy-code-floating-btn" onClick={copyScript}>
+            {copiedScript ? "✓ Copied!" : "📋 Copy Script"}
+          </button>
+          <pre>{demoScript}</pre>
+        </div>
+      </section>
     </div>
   );
 }

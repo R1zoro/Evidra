@@ -57,11 +57,15 @@ def lower_to_ir(procedure: Procedure) -> InvestigationIR:
 def _meaningful_inputs(operation: Operation) -> tuple[str, ...]:
     expression = operation.expression
     if operation.capability == "filter":
-        match = re.search(r"\bfrom\s+([A-Za-z_][A-Za-z0-9_-]*)", expression)
+        match = re.search(r"\bfrom\s+([A-Za-z0-9_/\\.-]+)", expression)
         return (match.group(1),) if match else ()
     if operation.capability == "correlate":
         body = expression[expression.find("(") + 1 : expression.rfind(")")]
-        return tuple(token.strip() for token in body.split(",") if token.strip())
+        return tuple(token.strip().strip('"').strip("'") for token in body.split(",") if token.strip())
+    if operation.capability in {"copy", "evidence.materialize"}:
+        copy_match = re.search(r'(?:copy|evidence\.materialize)\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))', expression)
+        if copy_match:
+            return (copy_match.group(1) or copy_match.group(2),)
     if " from " in f" {expression} ":
         return (expression.split(" from ", 1)[1].strip().split()[0],)
     tokens = expression.replace("(", " ").replace(")", " ").split()

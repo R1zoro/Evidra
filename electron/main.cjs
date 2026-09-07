@@ -64,7 +64,14 @@ app.whenReady().then(async () => {
   const inside = (root, target) => { const resolvedRoot = path.resolve(root); const resolvedTarget = path.resolve(target); if (resolvedTarget !== resolvedRoot && !resolvedTarget.startsWith(resolvedRoot + path.sep)) throw new Error("Path escapes case workspace"); return resolvedTarget; };
   const tree = async (root, relative = "") => { const target = inside(root, path.join(root, relative)); const entries = await fs.readdir(target, { withFileTypes: true }); return Promise.all(entries.filter((entry) => entry.name !== ".evidra").sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name)).map(async (entry) => ({ name: entry.name, path: path.join(relative, entry.name).replace(/\\/g, "/"), kind: entry.isDirectory() ? "directory" : "file", children: entry.isDirectory() ? await tree(root, path.join(relative, entry.name)) : undefined }))); };
   ipcMain.handle("evidra:tree", (_, root) => tree(root));
-  ipcMain.handle("evidra:read-file", async (_, root, relative) => fs.readFile(inside(root, path.join(root, relative)), "utf8"));
+  ipcMain.handle("evidra:read-file", async (_, root, relative) => {
+    try {
+      return await fs.readFile(inside(root, path.join(root, relative)), "utf8");
+    } catch (err) {
+      if (err && (err.code === "ENOENT" || err.errno === -4058)) return null;
+      throw err;
+    }
+  });
   ipcMain.handle("evidra:write-file", async (_, root, relative, content) => { const target = inside(root, path.join(root, relative)); await fs.mkdir(path.dirname(target), { recursive: true }); await fs.writeFile(target, content, "utf8"); return relative; });
   ipcMain.handle("evidra:create-folder", async (_, root, relative) => { await fs.mkdir(inside(root, path.join(root, relative)), { recursive: true }); return relative; });
   ipcMain.handle("evidra:rename", async (_, root, from, to) => { const source = inside(root, path.join(root, from)); const destination = inside(root, path.join(root, to)); await fs.rename(source, destination); return to; });

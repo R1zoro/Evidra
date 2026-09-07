@@ -49,8 +49,14 @@ def parse_procedure(source: str) -> Procedure:
             body = text
 
         destination_match = DESTINATION_RE.match(body)
-        destination = destination_match.group("destination").strip() if destination_match else None
-        expression = destination_match.group("body").strip() if destination_match else body.strip()
+        if destination_match:
+            destination = destination_match.group("destination").strip()
+            expression = destination_match.group("body").strip()
+        else:
+            as_match = re.search(r'\bas\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))', body)
+            destination = f'"{as_match.group(1) or as_match.group(2)}"' if as_match else None
+            expression = body.strip()
+
         tokens = expression.replace("(", " ").replace(")", " ").split()
         if not tokens:
             diagnostics.append(f"line {line_number}: missing operation")

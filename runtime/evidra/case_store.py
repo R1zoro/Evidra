@@ -78,7 +78,10 @@ class CaseStore:
     def find_source_reference(self, case_id: str, reference: str) -> dict[str, Any] | None:
         normalized = reference.replace("\\", "/").removeprefix("Sources/").strip()
         with self._connection() as connection:
-            row = connection.execute("SELECT id, case_id, name, source_path, fingerprint, status, created_at FROM sources WHERE case_id = ? AND (id = ? OR lower(name) = lower(?)) ORDER BY created_at LIMIT 1", (case_id, normalized, normalized)).fetchone()
+            row = connection.execute(
+                "SELECT id, case_id, name, source_path, fingerprint, status, created_at FROM sources WHERE case_id = ? AND (id = ? OR lower(name) = lower(?) OR lower(source_path) = lower(?) OR source_path = ?) ORDER BY created_at LIMIT 1",
+                (case_id, normalized, normalized, reference, reference),
+            ).fetchone()
         return dict(row) if row else None
 
     def save_execution(self, case_id: str, procedure_source: str, execution: dict[str, Any]) -> str:
@@ -134,5 +137,8 @@ class CaseStore:
     def find_evidence_reference(self, case_id: str, reference: str) -> dict[str, Any] | None:
         normalized = reference.replace("\\", "/").removeprefix("Evidence/").strip()
         with self._connection() as connection:
-            row = connection.execute("SELECT id, case_id, name, root, file_count, created_at FROM evidence WHERE case_id = ? AND (id = ? OR lower(name) = lower(?)) ORDER BY created_at LIMIT 1", (case_id, normalized, normalized)).fetchone()
+            row = connection.execute(
+                "SELECT id, case_id, name, root, file_count, created_at FROM evidence WHERE case_id = ? AND (id = ? OR lower(name) = lower(?) OR lower(root) = lower(?) OR root = ?) ORDER BY created_at LIMIT 1",
+                (case_id, normalized, normalized, reference, reference),
+            ).fetchone()
         return dict(row) if row else None

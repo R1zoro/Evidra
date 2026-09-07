@@ -64,6 +64,62 @@ class RuntimeServiceTests(unittest.TestCase):
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
+    def test_end_to_end_user_investigation_script(self) -> None:
+        root = Path(__file__).parents[2] / "tmp" / "user-script-test"
+        shutil.rmtree(root, ignore_errors=True)
+        try:
+            valora = root / "Valora"
+            valora.mkdir(parents=True)
+            (valora / "sample.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x03\x20\x00\x00\x02\x58\x08\x02\x00\x00\x00")
+            (valora / "archive.zip").write_bytes(FIXTURE.joinpath("files", "archive.zip").read_bytes())
+            (valora / "activity.log").write_text("2026-09-01T12:00:00Z WARN powershell.exe suspicious payload\n", encoding="utf-8")
+            
+            workspace = root / "case_workspace"
+            store = CaseStore(root / "case.db")
+            store.register_case("CASE-001", "Valora Case")
+            store.set_workspace("CASE-001", str(workspace))
+
+            script = f"""
+            # JOCKY investigation procedure
+            [prepare]
+                source = evidence.import "{valora}"
+                working = copy source as "working_evidence"
+
+            [examine]
+                artifacts = files.list working
+                suspicious = filter(extension == ".zip" | ".elf" | ".exe" | ".png") from artifacts
+                metadata = metadata.extract suspicious
+
+            [analysis]
+                events = events.extract from artifacts
+                findings = correlate(suspicious, metadata, events)
+
+            [export]
+                export findings > "./Outputs/findings.json"
+            """
+
+            response = RuntimeService(store).execute(script, FIXTURE, "CASE-001")
+            self.assertEqual(response["status"], "completed")
+            
+            # Check source was auto-registered in store
+            sources = store.list_sources("CASE-001")
+            self.assertEqual(len(sources), 1)
+            self.assertEqual(sources[0]["name"], "Valora")
+            
+            # Check working evidence was copied to workspace
+            self.assertTrue((workspace / "Evidence" / "working_evidence" / "sample.png").exists())
+            self.assertTrue((workspace / "Evidence" / "working_evidence" / "archive.zip").exists())
+            
+            # Check export wrote findings.json to workspace
+            export_file = workspace / "Outputs" / "findings.json"
+            self.assertTrue(export_file.exists())
+            import json
+            findings_data = json.loads(export_file.read_text(encoding="utf-8"))
+            self.assertGreaterEqual(len(findings_data), 1)
+            self.assertIn("severity", findings_data[0])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()
