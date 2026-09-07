@@ -5,18 +5,20 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "electron:dev": "electron electron/main.cjs",
     "build": "tsc -b && vite build",
     "check": "tsc -b --pretty false && vite build"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
-    "typescript": "latest",
     "react": "latest",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "typescript": "latest",
+    "vite": "latest"
   },
   "devDependencies": {
     "@types/react": "latest",
-    "@types/react-dom": "latest"
+    "@types/react-dom": "latest",
+    "electron": "^44.2.0"
   }
 }

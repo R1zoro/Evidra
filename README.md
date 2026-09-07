@@ -165,6 +165,17 @@ Start the development client:
 npm run dev
 ```
 
+For the desktop shell, keep the Vite renderer running in one terminal and start Electron in a second terminal:
+
+```powershell
+npm run dev
+npm run electron:dev
+```
+
+Electron connects to the renderer at `http://127.0.0.1:5173`, starts the local Python runtime when it is not already running, and exposes native case-folder, source-folder, filesystem-tree, and file-editing operations through a restricted preload bridge. Set `EVIDRA_RUNTIME_EXTERNAL=1` only when you intentionally want to supervise `python runtime/server.py` yourself.
+
+The runtime listens only on `http://127.0.0.1:8765` and currently exposes `GET /health`, `GET /api/cases/{case_id}`, `GET /api/cases/{case_id}/runs`, `POST /api/validate`, and `POST /api/execute`. The execute endpoint accepts a JSON body with `source` and an optional `evidence_root`.
+
 Run the bundled type-check and production-build verification:
 
 ```powershell
