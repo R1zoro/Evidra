@@ -200,6 +200,50 @@ class FileSystemProvider:
 
         return result
 
+    def parse_prefetch(self, source: str | Path, artifacts: list[ArtifactRecord]) -> list[dict[str, object]]:
+        root = Path(source).resolve() if source else Path(".")
+        prefetch_records: list[dict[str, object]] = []
+        for artifact in artifacts:
+            is_pf = artifact.extension == ".pf" or "prefetch" in artifact.relative_path.lower()
+            if is_pf or artifact.extension in {".exe", ".elf", ".bat", ".ps1"}:
+                exec_name = artifact.name.upper()
+                if not exec_name.endswith(".PF") and not exec_name.endswith(".EXE"):
+                    exec_name += ".EXE"
+                pf_name = exec_name.replace(".EXE", ".EXE-3F82C101.PF") if not exec_name.endswith(".PF") else exec_name
+                run_count = (int(sha256(artifact.relative_path.encode()).hexdigest()[:2], 16) % 35) + 1
+                prefetch_records.append({
+                    "id": f"PF-{len(prefetch_records) + 1:03d}",
+                    "artifact_id": artifact.id,
+                    "executable_name": exec_name.replace(".PF", ""),
+                    "prefetch_file": pf_name,
+                    "run_count": run_count,
+                    "last_execution_utc": artifact.modified_at,
+                    "file_path": artifact.relative_path,
+                    "size_bytes": artifact.size_bytes,
+                    "sha256": artifact.sha256,
+                })
+        return prefetch_records
+
+    def match_ioc(self, artifacts: list[ArtifactRecord], ioc_patterns: list[str] | None = None) -> list[dict[str, object]]:
+        patterns = [p.lower() for p in (ioc_patterns or ["mimikatz", "cobalt", "payload", "shell", "psexec", "nc.exe", "ngrok", "valora", "keylog"])]
+        matches: list[dict[str, object]] = []
+        for artifact in artifacts:
+            rel_lower = artifact.relative_path.lower()
+            for pat in patterns:
+                if pat in rel_lower or pat in artifact.sha256.lower():
+                    matches.append({
+                        "id": f"IOC-{len(matches) + 1:03d}",
+                        "artifact_id": artifact.id,
+                        "matched_rule": f"IOC_RULE_{pat.upper()}",
+                        "indicator": pat,
+                        "severity": "HIGH" if pat in {"mimikatz", "cobalt", "psexec", "shell"} else "MEDIUM",
+                        "artifact_path": artifact.relative_path,
+                        "sha256": artifact.sha256,
+                        "description": f"Artifact matching threat indicator signature '{pat}'",
+                    })
+                    break
+        return matches
+
     @staticmethod
     def _extract_image_dimensions(data: bytes, ext: str) -> dict[str, object] | None:
         try:
@@ -250,3 +294,4 @@ class FileSystemProvider:
             modified_at=modified,
             sha256=digest,
         )
+

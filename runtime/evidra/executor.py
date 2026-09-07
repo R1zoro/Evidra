@@ -155,6 +155,19 @@ def _execute_operation(
         if not isinstance(source, list):
             raise ValueError("timeline.build requires an event collection")
         return "Timeline", sorted(source, key=lambda item: str(item.get("timestamp", ""))), tuple(operation.inputs)
+    if operation.capability in {"artifacts.parse_prefetch", "prefetch.extract"}:
+        source = _resolve_value(operation.inputs, values, workspace_root)
+        if not isinstance(source, list):
+            raise ValueError("prefetch.extract requires an artifact collection")
+        root = values.get("EVID-001")
+        if not isinstance(root, Path) and workspace_root:
+            root = workspace_root
+        return "PrefetchCollection", provider.parse_prefetch(root if isinstance(root, Path) else Path("."), source), tuple(operation.inputs)
+    if operation.capability in {"ioc.match", "threat.match"}:
+        source = _resolve_value(operation.inputs, values, workspace_root)
+        if not isinstance(source, list):
+            raise ValueError("ioc.match requires an artifact collection")
+        return "IOCCollection", provider.match_ioc(source), tuple(operation.inputs)
     if operation.capability == "correlate":
         input_values = [_resolve_value((name,), values, workspace_root) for name in operation.inputs]
         findings = _perform_forensic_correlation(operation.inputs, input_values)

@@ -117,9 +117,3 @@ npm run check
 # 3. Launch Desktop Application (Electron + Local Python Server)
 npm run electron:dev
 ```
-
-### Running Backend Tests
-```bash
-cd runtime
-python -m unittest discover -s tests -t . -v
-```

@@ -553,6 +553,13 @@ function Workspace() {
     setNotice(`✦ Saved finding: ${newFinding.title}`);
   };
 
+  const switchCase = () => {
+    sessionStorage.removeItem("evidra.caseId");
+    sessionStorage.removeItem("evidra.caseName");
+    sessionStorage.removeItem("evidra.caseRoot");
+    window.location.reload();
+  };
+
   return (
     <div
       className="desktop-shell"
@@ -569,6 +576,7 @@ function Workspace() {
         onAddSource={addSource}
         onNewFile={() => setDialog({ type: "new-file", targetDir: "" })}
         onView={(next) => { setView(next); setMenu(null); }}
+        onSwitchCase={switchCase}
       />
 
       <input ref={sourceInput} className="hidden-file-input" type="file" multiple onChange={(event) => void browserSource(event)} />
@@ -787,12 +795,14 @@ function AppMenu({
   onAddSource,
   onNewFile,
   onView,
+  onSwitchCase,
 }: {
   active: Menu;
   onToggle: (menu: Menu) => void;
   onAddSource: () => void;
   onNewFile: () => void;
   onView: (view: View) => void;
+  onSwitchCase?: () => void;
 }) {
   const menuContent = (item: Exclude<Menu, null>) => (
     <>
@@ -801,6 +811,7 @@ function AppMenu({
           <button onClick={onAddSource}>Add Source Reference…</button>
           <button onClick={onNewFile}>New File…</button>
           <button onClick={() => onView("WORKBENCH")}>Open Workbench</button>
+          {onSwitchCase && <button onClick={onSwitchCase} style={{ color: "#e8ad6b", fontWeight: 700 }}>Switch / Change Case Folder…</button>}
         </>
       )}
       {item === "Edit" && (
@@ -833,6 +844,7 @@ function AppMenu({
         <>
           <button onClick={onAddSource}>File · Add Source Reference</button>
           <button onClick={onNewFile}>File · New File</button>
+          {onSwitchCase && <button onClick={onSwitchCase} style={{ color: "#e8ad6b" }}>File · Switch / Change Case Folder…</button>}
           <button onClick={() => onView("WORKBENCH")}>View · Workbench</button>
           <button onClick={() => onView("BLOCKS")}>View · Building Blocks</button>
           <button onClick={() => onView("DOCS")}>Help · JOCKY Reference</button>
@@ -1777,6 +1789,95 @@ function renderSpecializedResult(
               </div>
             );
           })}
+        </div>
+      </div>
+    );
+  }
+
+  // 3b. PrefetchCollection Renderer
+  if ((type === "PrefetchCollection" || type === "ArtifactInspection") && Array.isArray(value)) {
+    const items = value as Array<{
+      id: string;
+      executable_name: string;
+      prefetch_file: string;
+      run_count: number;
+      last_execution_utc: string;
+      file_path: string;
+      sha256: string;
+    }>;
+
+    return (
+      <div className="specialized-artifact-view">
+        <div className="result-summary-bar">
+          <span>Prefetch Executables: <strong>{items.length}</strong></span>
+        </div>
+        <div className="result-table-wrap">
+          <table className="result-table">
+            <thead>
+              <tr>
+                <th>Executable</th>
+                <th>Exec Count</th>
+                <th>Last Executed (UTC)</th>
+                <th>Prefetch Artifact</th>
+                <th>Path</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((pf) => (
+                <tr key={pf.id}>
+                  <td><strong>{pf.executable_name}</strong></td>
+                  <td><span className="ext-badge">{pf.run_count} runs</span></td>
+                  <td><small className="mono-time">{pf.last_execution_utc ? pf.last_execution_utc.replace("T", " ") : "-"}</small></td>
+                  <td><code className="path-code">{pf.prefetch_file}</code></td>
+                  <td><code className="path-code">{pf.file_path}</code></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
+  // 3c. IOCCollection Renderer
+  if ((type === "IOCCollection" || type === "ThreatMatch") && Array.isArray(value)) {
+    const items = value as Array<{
+      id: string;
+      matched_rule: string;
+      indicator: string;
+      severity: string;
+      artifact_path: string;
+      description: string;
+    }>;
+
+    return (
+      <div className="specialized-artifact-view">
+        <div className="result-summary-bar">
+          <span>Matched Threat Indicators: <strong style={{ color: "#c93c3c" }}>{items.length}</strong></span>
+        </div>
+        <div className="result-table-wrap">
+          <table className="result-table">
+            <thead>
+              <tr>
+                <th>Severity</th>
+                <th>Matched Rule</th>
+                <th>Indicator</th>
+                <th>Artifact Path</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((ioc) => (
+                <tr key={ioc.id}>
+                  <td><span className={`status-tag ${ioc.severity.toLowerCase()}`}>{ioc.severity}</span></td>
+                  <td><strong>{ioc.matched_rule}</strong></td>
+                  <td><code className="path-code">{ioc.indicator}</code></td>
+                  <td><code className="path-code">{ioc.artifact_path}</code></td>
+                  <td>{ioc.description}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
     );

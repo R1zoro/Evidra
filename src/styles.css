@@ -343,6 +343,12 @@ body.resizing-active * {
 .graph-file-size { font-size: 7px; color: #7b93a0; font-family: 'Cascadia Code', Consolas, monospace; }
 .graph-badge-pill { font-size: 7px; font-weight: 800; padding: 1px 4px; border-radius: 2px; text-transform: uppercase; background: #e3ecf0; color: #2e5365; }
 
+/* Status Bar */
+.status-bar { display: flex; height: 26px; flex: 0 0 26px; align-items: center; gap: 10px; padding: 0 14px; background: #1e2c39; color: #aebec6; font-size: 9px; font-family: 'Cascadia Code', Consolas, monospace; border-top: 1px solid #334857; user-select: none; }
+.status-bar span { display: inline-flex; align-items: center; gap: 4px; background: #263847; padding: 2px 7px; border-radius: 3px; border: 1px solid #384e5e; font-size: 8px; color: #d0deef; }
+.status-spacer { flex: 1; }
+.status-notice { background: transparent !important; border: 0 !important; color: #6fbfa9 !important; font-weight: 700; font-size: 9px !important; }
+
 /* Graph Legend & Status */
 .graph-bottom-legend { display: flex; align-items: center; gap: 16px; padding: 8px 18px; background: #f4f7f8; border-top: 1px solid #cad7dc; font-size: 8px; color: #587382; flex-shrink: 0; }
 .legend-item { display: flex; align-items: center; gap: 5px; font-weight: 600; }
