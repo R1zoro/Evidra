@@ -15,6 +15,7 @@ cases/*/outputs/
 cases/*/case.db
 tmp/
 test/
+tests/
 .idea/
 .vscode/
 Thumbs.db

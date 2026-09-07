@@ -1,185 +1,125 @@
-# Evidra
+# Evidra — Digital Forensic Workstation & JOCKY DSL
 
-Evidra is a local-first digital forensic investigation environment for examining acquired evidence through a repeatable, analyst-oriented workflow. It combines a case workspace, evidence explorer, JOCKY procedure editor, exploratory Workbench, typed result viewers, provenance, timeline analysis, correlation, and export paths in one desktop-oriented application.
+Evidra is a local-first, non-destructive digital forensic investigation environment designed for examining acquired evidence through a repeatable, analyst-oriented workflow. It combines a case workspace, evidence explorer, JOCKY procedure editor, exploratory Workbench, typed result viewers, interactive lineage graph, visual building blocks, timeline correlation, and export paths into a unified desktop workstation.
 
-Evidra is designed for investigators who need to describe an examination once, run it against an authorized evidence source, inspect structured results, and understand how each observation supports a finding. The platform is intentionally not a generic dashboard or a shell wrapper. Its interface is organized like a professional investigation workstation: evidence and procedures remain visible while results, operations, and relationships can be inspected in context.
+---
 
-## Product direction
+## 🌟 Key Features & Capabilities
 
-The first release is Windows-ready and local/offline by default. It begins after evidence acquisition and focuses on examination and analysis of synthetic or imported evidence. A portable case can contain its own metadata, procedures, run history, provenance, integrity records, outputs, and references to evidence sources.
+### 1. Unified VS Code-Style Case Explorer
+- Managed case workspace (`.evidra/manifest.json`).
+- Hierarchical file tree with context menus (New File, New Folder, Rename, Delete).
+- Support for `.jocky` scripts, `.block` visual building blocks, `.json`, `.csv`, `.log`, and text files.
+- Drag-to-resize sidebar width with collapse toggle.
 
-The product is organized around five promises:
+### 2. JOCKY Procedure Editor
+- Multi-tab file editor with syntax highlighting, dirty indicator, and Ctrl+S saving.
+- 1-click **Run Procedure** execution engine.
 
-1. An analyst has a managed case.
-2. Evidence can be registered and examined without losing its identity.
-3. A repeatable investigation can be written in JOCKY.
-4. JOCKY produces structured, typed forensic results.
-5. Results remain connected to their evidence, operations, and findings.
+### 3. Exploratory Workbench
+- Cell-based workspace for rapid hypothesis testing without modifying the primary procedure.
+- Clickable preset templates: "Quick Triage", "Deep Metadata Extraction", "Timeline Reconstruction", and "Multi-Vector Correlation".
+- Instant typed result rendering in the Results Explorer.
 
-The durable Procedure and the exploratory Workbench are separate concepts. A Procedure records repeatable investigation logic. The Workbench supports temporary cells and intermediate-result exploration without forcing every experiment into the permanent procedure.
+### 4. Interactive Investigation Lineage Graph
+- **Dotted Grid Background**: Professional forensics visual canvas (`radial-gradient(#9cb3bf 1.25px, transparent 1.25px)`).
+- **Dual View Modes**:
+  - **⌘ Pipeline Lineage Graph**: Shows horizontal execution columns from Evidence Source → Capability Operations → Typed Results → Export.
+  - **◇ Evidence & Artifact Tree**: Displays Evidence Root with an **expandable/collapsible** artifact tree (grouped by file extension), connected to downstream operations and findings.
+- **Draggable Nodes**: Drag any node across the canvas; smooth SVG Bézier curves update dynamically in real time.
+- **Lineage Path Highlighting**: Clicking any node or artifact file bolds its exact connected path while dimming unrelated paths.
+- **Even Port Spacing**: Anchors connection ports evenly vertically along the Evidence container to prevent line clumping.
+- **In-App Zoom Controls**: `＋ Zoom`, `－ Zoom`, and `↺ Reset` buttons for scaling the canvas without distorting workstation UI.
 
-## JOCKY language
+### 5. Visual Building Blocks Editor
+- Modular block representation:
+  - **Import Source Block** (Output-only evidence provider).
+  - **Transform / Analysis Block** (Implicitly accepts connected inputs and emits derived collections).
+  - **Export Sink Block** (Persists results to disk).
+- Add/remove blocks and 1-click **⚡ Reset Demo Blocks** generator for presentation flows.
 
-JOCKY is a small domain-specific language for forensic intent. It describes the analyst-level operation rather than a Windows command, Linux command, Python library, or specialist-tool invocation. Providers determine how an approved capability is implemented.
+### 6. Specialized Results Explorer
+Typed forensic renderer for intermediate results:
+- `ArtifactCollection` — Interactive table with file names, relative paths, size calculations, modification UTC timestamps, and 1-click SHA-256 hash copy.
+- `MetadataCollection` — Deep format inspector for Archives (`.zip` members & high-risk alerts), Binaries (PE/ELF format, platform, architecture), Images (dimensions, aspect ratio), Tabular (`.csv` column schema & row count), and Text (`.log` UTF-8 previews).
+- `EventCollection / Timeline` — Chronological timeline stream with severity level badges (`INFO`, `WARN`, `ERROR`), event kinds, and timestamps.
+- `FindingCollection` — Correlated forensic cards with high/medium severity indicators, confidence meters, and artifact/event references.
+- `Export` — Verification of disk persistence, record count, and SHA-256 file digest.
 
-The current provisional v0.1 contract supports:
+---
+
+## 📜 JOCKY DSL Syntax & Lifecycle
+
+JOCKY structures digital forensic procedures into four deterministic stages aligned with standard forensic frameworks (NIST SP 800-86 & ISO/IEC 27037):
 
 ```jocky
+# JOCKY Forensic Investigation Procedure
+
 [prepare]
-    working = copy EVID-001 as "working_evidence"
-    hash working
+    source = evidence.import "C:\Users\XYLA\Downloads\Valora"
+    working = copy source as "working_evidence"
 
 [examine]
     artifacts = files.list working
-    suspicious = filter(extension == ".zip" | ".elf") from artifacts
+    suspicious = filter(extension == ".zip" | ".elf" | ".exe" | ".png") from artifacts
     metadata = metadata.extract suspicious
 
 [analysis]
     events = events.extract from artifacts
+    timeline = timeline.build from events
     findings = correlate(suspicious, metadata, events)
 
 [export]
-    export findings > "./outputs/findings.json"
+    export findings > "./Outputs/findings.json"
 ```
 
-### v0.1 semantics
+---
 
-- `[stage]` creates a named semantic investigation stage; it is not a function.
-- `=` binds an operation result to a named reference.
-- `from` identifies the source of an operation or filter.
-- `>` materializes or sends a result to a destination; it is not an arbitrary shell pipe.
-- `filter(...)` is a general operation over typed collections.
-- `|` expresses alternatives and `&` expresses conjunctions inside filter expressions.
-- Procedures are parsed into an AST and lowered into a platform-neutral Investigation IR.
-- Runs are sequential initially, but dependencies are recorded so independent work can continue after an unrelated failure.
-- Dependent operations become `blocked` when required inputs are missing, invalid, or denied.
-- Every rerun creates a new run record. Previous results are not silently overwritten.
-- Statuses include `queued`, `running`, `completed`, `failed`, `denied`, `partial`, and `blocked`.
+## 🛠 Architectural Overview
 
-The detailed contract is maintained in [`docs/JOCKY_V0_1.md`](docs/JOCKY_V0_1.md). The language is deliberately provisional and should gain syntax only when a real forensic use case justifies it.
-
-## Core capabilities
-
-The initial capability catalogue is organized by analyst need rather than implementation technology:
-
-| Area | Capabilities | Typical result |
-| --- | --- | --- |
-| Evidence | `evidence.import`, `copy` | Evidence or working-derivative record |
-| Integrity | `hash`, `hash.verify` | Integrity record |
-| Artifacts | `files.list`, `files.search`, `files.inspect`, `filter` | ArtifactCollection |
-| Metadata | `metadata.extract` | MetadataCollection |
-| Events | `events.extract`, `events.merge` | EventCollection |
-| Timeline | `timeline.build` | Timeline |
-| Analysis | `correlate` | Relationships and findings |
-| Output | `export` | Materialized JSON, CSV, text, or supported file output |
-
-Each capability declares its inputs, outputs, required capability, provider, status, and provenance. The UI can then choose a suitable result renderer instead of displaying every operation as undifferentiated console text.
-
-## Typed Results Explorer
-
-The Workbench is a universal investigation surface for intermediate results. A capability returns a typed result and Evidra selects a compatible view:
-
-```text
-ArtifactCollection  -> artifact tree/table/details
-MetadataCollection  -> structured metadata viewer
-EventCollection     -> event table/timeline
-Timeline            -> timeline viewer
-ProcessCollection   -> process table/details
-PacketCollection    -> packet table/details/raw output
-HashRecord          -> integrity viewer
-Text/File result    -> text, JSON, file, or raw-output viewer
-Unknown result      -> safe raw/JSON fallback
+```
+JOCKY Source Text
+    │
+    ▼
+Lexer & Parser (runtime/jocky/parser.py)
+    │
+    ▼
+Investigation IR Lowering (runtime/jocky/ir.py)
+    │
+    ▼
+Core Executor (runtime/evidra/executor.py)
+    │
+    ▼
+FileSystem Forensic Provider (runtime/evidra/providers/filesystem.py)
+    │
+    ▼
+Typed Result & Preserved CaseStore (.evidra/manifest.json)
 ```
 
-Every result keeps a common context: result ID, operation, input, provider, timestamp, status, and provenance. Structured output and original provider output can coexist, so normalization never has to discard specialist-tool data.
+For a deep-dive technical reference on graph mathematics, IR translation, keyword definitions, and Python engine rationale, see [`tests/ARCHITECTURE_AND_THEORY.md`](tests/ARCHITECTURE_AND_THEORY.md).
 
-## Architecture
+---
 
-```text
-JOCKY source
-    -> lexer / parser
-    -> AST
-    -> Investigation IR
-    -> capability and policy planning
-    -> provider or platform adapter
-    -> normalized typed result
-    -> case graph and provenance
-    -> Evidra client / export
-```
+## ⚙️ Quick Start & Running Tests
 
-The current application is split conceptually into:
+### Prerequisites
+- Node.js 18+ & npm
+- Python 3.10+
 
-- `client/`: React and TypeScript workstation interface;
-- `runtime/`: planned Python JOCKY parser, IR, execution, and forensic processing;
-- `contracts/`: shared case, evidence, operation, result, and provenance schemas;
-- `providers/`: native, library, and specialist-tool adapters behind capability contracts;
-- `cases/`: portable case packages and controlled synthetic evidence;
-- `desktop/`: future Electron shell and Windows packaging layer.
-
-The prototype uses React/TypeScript for fast, componentized UI work and Python for the language/runtime and forensic data ecosystem. SQLite is the planned local case store. The filesystem stores evidence references and materialized outputs. Electron will later package and supervise the local Python process without changing the renderer’s application boundary.
-
-## Current interface
-
-The application currently presents:
-
-- a VS Code-inspired activity bar and case explorer;
-- a JOCKY procedure editor as the primary investigation surface;
-- an exploratory Workbench with cells and scrollable typed-result previews;
-- artifact, metadata, event, finding, and graph entry points;
-- a read-only Building Blocks view generated from the investigation flow;
-- run status, operation states, and provenance context;
-- a Help/documentation placeholder for the future capability reference.
-
-The correlation graph is intentionally treated as a separate workspace tool. Future graph modes may include object lineage, input-to-output mapping, analyst-defined correlation, and case-wide relationship views.
-
-## Future work
-
-Planned extensions include:
-
-- real JOCKY parsing, validation, and Investigation IR execution;
-- SQLite-backed portable case packages and preserved run history;
-- Windows providers followed by Ubuntu providers;
-- richer metadata namespaces and normalized timeline events;
-- typed renderers for processes, packets, memory observations, and specialist-tool output;
-- object, result, and case-wide graph scopes;
-- editable visual Building Blocks synchronized with JOCKY through the shared IR;
-- capability negotiation and policy-aware alternate provider plans;
-- replayable investigations, evidence capsules, investigation diffs, and signed procedures;
-- controlled authorized live-source providers and fleet orchestration;
-- Electron Windows packaging, runtime supervision, and later cross-platform packaging;
-- analyst-authored reporting and organization-specific report templates.
-
-Operational security-control evasion, vulnerable-driver exploitation, covert transport, and offensive endpoint bypass are outside the safe prototype implementation boundary.
-
-## Running Evidra
-
-Install the frontend dependencies:
-
-```powershell
+### Installation & Execution
+```bash
+# 1. Install frontend dependencies
 npm install
-```
 
-Start the development client:
+# 2. Run TypeScript build check
+npm run check
 
-```powershell
-npm run dev
-```
-
-For the desktop shell, keep the Vite renderer running in one terminal and start Electron in a second terminal:
-
-```powershell
-npm run dev
+# 3. Launch Desktop Application (Electron + Local Python Server)
 npm run electron:dev
 ```
 
-Electron connects to the renderer at `http://127.0.0.1:5173`, starts the local Python runtime when it is not already running, and exposes native case-folder, source-folder, filesystem-tree, and file-editing operations through a restricted preload bridge. Set `EVIDRA_RUNTIME_EXTERNAL=1` only when you intentionally want to supervise `python runtime/server.py` yourself.
-
-The runtime listens only on `http://127.0.0.1:8765` and currently exposes `GET /health`, `GET /api/cases/{case_id}`, `GET /api/cases/{case_id}/runs`, `POST /api/validate`, and `POST /api/execute`. The execute endpoint accepts a JSON body with `source` and an optional `evidence_root`.
-
-Run the bundled type-check and production-build verification:
-
-```powershell
-npm run check
+### Running Backend Tests
+```bash
+cd runtime
+python -m unittest discover -s tests -t . -v
 ```
-
-The current UI is a local client shell while the Python runtime boundary is being built. The intended end state is a local Evidra application that opens a case, loads a JOCKY procedure, executes it through approved providers, persists each run, and presents structured results with traceable provenance.

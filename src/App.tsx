@@ -1940,7 +1940,10 @@ function GraphNode({
   typeStr,
   count,
   selected,
+  dimmed,
+  offset,
   onSelect,
+  onDragStart,
   children,
 }: {
   id: string;
@@ -1950,7 +1953,10 @@ function GraphNode({
   typeStr?: string;
   count?: number;
   selected?: boolean;
+  dimmed?: boolean;
+  offset?: { x: number; y: number };
   onSelect: (id: string) => void;
+  onDragStart?: (id: string, e: React.MouseEvent) => void;
   children?: ReactNode;
 }) {
   const typeClass = typeStr
@@ -1960,8 +1966,12 @@ function GraphNode({
   return (
     <div
       id={id}
-      className={`graph-card-node ${kind}-card ${typeClass} ${selected ? "selected" : ""}`}
-      onClick={() => onSelect(id)}
+      className={`graph-card-node ${kind}-card ${typeClass} ${selected ? "selected" : ""} ${dimmed ? "dimmed" : ""}`}
+      style={offset ? { transform: `translate(${offset.x}px, ${offset.y}px)` } : undefined}
+      onMouseDown={(e) => {
+        if (onDragStart) onDragStart(id, e);
+        onSelect(id);
+      }}
     >
       <div className="graph-card-head">
         <span className="graph-card-type">{kind === "source" ? "EVIDENCE" : kind === "op" ? "CAPABILITY" : typeStr ?? "RESULT"}</span>
@@ -1979,11 +1989,21 @@ function BezierEdge({
   toId,
   containerRef,
   zoom,
+  highlighted,
+  dimmed,
+  portIndex,
+  portTotal,
+  dragTick,
 }: {
   fromId: string;
   toId: string;
   containerRef: React.RefObject<HTMLDivElement | null>;
   zoom: number;
+  highlighted?: boolean;
+  dimmed?: boolean;
+  portIndex?: number;
+  portTotal?: number;
+  dragTick?: number;
 }) {
   const [path, setPath] = useState("");
 
@@ -1991,7 +2011,7 @@ function BezierEdge({
     const calculate = () => {
       if (!containerRef.current) return;
       const container = containerRef.current;
-      const scaler = container.querySelector<HTMLDivElement>(".graph-content-scaler");
+      const scaler = container.querySelector<HTMLDivElement>(".graph-content-scaler") || container.querySelector<HTMLDivElement>(".blocks-canvas-area");
       if (!scaler) return;
       const sRect = scaler.getBoundingClientRect();
       const fromEl = container.querySelector(`#${fromId}`);
@@ -2001,11 +2021,15 @@ function BezierEdge({
       const tRect = toEl.getBoundingClientRect();
 
       const x1 = (fRect.right - sRect.left) / zoom;
-      const y1 = (fRect.top + fRect.height / 2 - sRect.top) / zoom;
+      let y1 = (fRect.top + fRect.height / 2 - sRect.top) / zoom;
+      if (portIndex !== undefined && portTotal !== undefined && portTotal > 0) {
+        y1 = (fRect.top + ((portIndex + 0.5) / portTotal) * fRect.height - sRect.top) / zoom;
+      }
+
       const x2 = (tRect.left - sRect.left) / zoom;
       const y2 = (tRect.top + tRect.height / 2 - sRect.top) / zoom;
 
-      const dx = Math.max(40, (x2 - x1) * 0.45);
+      const dx = Math.max(45, (x2 - x1) * 0.45);
       const cx1 = x1 + dx;
       const cy1 = y1;
       const cx2 = x2 - dx;
@@ -2014,7 +2038,7 @@ function BezierEdge({
     };
 
     calculate();
-    const timer = setTimeout(calculate, 100);
+    const timer = setTimeout(calculate, 16);
     const handleScroll = () => calculate();
     const container = containerRef.current;
     if (container) container.addEventListener("scroll", handleScroll);
@@ -2024,22 +2048,48 @@ function BezierEdge({
       if (container) container.removeEventListener("scroll", handleScroll);
       window.removeEventListener("resize", calculate);
     };
-  }, [fromId, toId, containerRef, zoom]);
+  }, [fromId, toId, containerRef, zoom, portIndex, portTotal, dragTick]);
 
   if (!path) return null;
+  const pathClass = highlighted ? "graph-bezier-path highlighted" : dimmed ? "graph-bezier-path dimmed" : "graph-bezier-path";
+  const markerId = highlighted ? "arr-highlighted" : "arr";
+
   return (
     <svg
       className="graph-svg-layer"
-      style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: 1, overflow: "visible" }}
+      style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", pointerEvents: "none", zIndex: highlighted ? 3 : 1, overflow: "visible" }}
     >
       <defs>
         <marker id="arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
           <polygon points="0 0, 7 3.5, 0 7" fill="#6b9eb8" />
         </marker>
+        <marker id="arr-highlighted" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+          <polygon points="0 0, 9 4.5, 0 9" fill="#1b6088" />
+        </marker>
       </defs>
-      <path d={path} className="graph-bezier-path" markerEnd="url(#arr)" />
+      <path d={path} className={pathClass} markerEnd={`url(#${markerId})`} />
     </svg>
   );
+}
+
+function getConnectedNodes(selectedId: string | null, edges: { from: string; to: string }[]) {
+  if (!selectedId) return new Set<string>();
+  const connected = new Set<string>([selectedId]);
+  let added = true;
+  while (added) {
+    added = false;
+    for (const e of edges) {
+      if (connected.has(e.from) && !connected.has(e.to)) {
+        connected.add(e.to);
+        added = true;
+      }
+      if (connected.has(e.to) && !connected.has(e.from)) {
+        connected.add(e.from);
+        added = true;
+      }
+    }
+  }
+  return connected;
 }
 
 function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
@@ -2047,7 +2097,34 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(["artifacts"]));
+  const [nodeOffsets, setNodeOffsets] = useState<Record<string, { x: number; y: number }>>({});
+  const [dragTick, setDragTick] = useState(0);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ id: string; startX: number; startY: number; initX: number; initY: number } | null>(null);
+
+  const handleDragStart = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const init = nodeOffsets[id] || { x: 0, y: 0 };
+    dragRef.current = { id, startX: e.clientX, startY: e.clientY, initX: init.x, initY: init.y };
+
+    const handleMouseMove = (me: MouseEvent) => {
+      if (!dragRef.current) return;
+      const dx = (me.clientX - dragRef.current.startX) / zoom;
+      const dy = (me.clientY - dragRef.current.startY) / zoom;
+      const targetId = dragRef.current.id;
+      setNodeOffsets((prev) => ({ ...prev, [targetId]: { x: dragRef.current!.initX + dx, y: dragRef.current!.initY + dy } }));
+      setDragTick((t) => t + 1);
+    };
+
+    const handleMouseUp = () => {
+      dragRef.current = null;
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+  };
 
   if (!response) {
     return (
@@ -2084,6 +2161,8 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
       edges.push({ from: `node-op-${r.id}`, to: `node-result-${r.id}` });
     });
 
+    const connectedSet = getConnectedNodes(selectedNodeId, edges);
+
     return (
       <div className="graph-view-wrapper">
         <div className="graph-top-toolbar">
@@ -2098,39 +2177,84 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
           <div className="graph-controls-group">
             <button className="graph-zoom-btn" onClick={() => setZoom((z) => Math.min(z + 0.15, 2))}>＋ Zoom</button>
             <button className="graph-zoom-btn" onClick={() => setZoom((z) => Math.max(z - 0.15, 0.4))}>－ Zoom</button>
-            <button className="graph-zoom-btn" onClick={() => setZoom(1)}>↺ Reset</button>
+            <button className="graph-zoom-btn" onClick={() => { setZoom(1); setNodeOffsets({}); }}>↺ Reset</button>
           </div>
         </div>
 
         <div className="graph-canvas-container" ref={canvasRef}>
           <div className="graph-content-scaler" style={{ transform: `scale(${zoom})` }}>
             <div className="graph-nodes-layer">
-              {/* Source Column */}
               <div className="graph-stage-column">
                 <div className="graph-stage-header">Source <span className="graph-stage-badge">1</span></div>
-                <GraphNode id="node-source" label={srcRef} sub={srcName} kind="source" selected={selectedNodeId === "node-source"} onSelect={setSelectedNodeId} />
+                <GraphNode
+                  id="node-source"
+                  label={srcRef}
+                  sub={srcName}
+                  kind="source"
+                  selected={selectedNodeId === "node-source"}
+                  dimmed={Boolean(selectedNodeId && !connectedSet.has("node-source"))}
+                  offset={nodeOffsets["node-source"]}
+                  onSelect={setSelectedNodeId}
+                  onDragStart={handleDragStart}
+                />
               </div>
 
-              {/* Per-result columns */}
               {response.results.map((result) => {
                 const step = response.steps.find((s) => s.operation_id === result.operation_id);
                 const cap = step?.capability ?? result.operation_id ?? "operation";
                 const count = Array.isArray(result.value) ? result.value.length : undefined;
+                const opId = `node-op-${result.id}`;
+                const resId = `node-result-${result.id}`;
                 return (
                   <div className="graph-stage-column" key={result.id}>
                     <div className="graph-stage-header">
                       {cap} <span className="graph-stage-badge">{result.type.replace("Collection", "")}</span>
                     </div>
-                    <GraphNode id={`node-op-${result.id}`} label={cap} sub={result.operation_id} kind="op" selected={selectedNodeId === `node-op-${result.id}`} onSelect={setSelectedNodeId} />
-                    <GraphNode id={`node-result-${result.id}`} label={result.id} sub={result.status} kind="result" typeStr={result.type} count={count} selected={selectedNodeId === `node-result-${result.id}`} onSelect={setSelectedNodeId} />
+                    <GraphNode
+                      id={opId}
+                      label={cap}
+                      sub={result.operation_id}
+                      kind="op"
+                      selected={selectedNodeId === opId}
+                      dimmed={Boolean(selectedNodeId && !connectedSet.has(opId))}
+                      offset={nodeOffsets[opId]}
+                      onSelect={setSelectedNodeId}
+                      onDragStart={handleDragStart}
+                    />
+                    <GraphNode
+                      id={resId}
+                      label={result.id}
+                      sub={result.status}
+                      kind="result"
+                      typeStr={result.type}
+                      count={count}
+                      selected={selectedNodeId === resId}
+                      dimmed={Boolean(selectedNodeId && !connectedSet.has(resId))}
+                      offset={nodeOffsets[resId]}
+                      onSelect={setSelectedNodeId}
+                      onDragStart={handleDragStart}
+                    />
                   </div>
                 );
               })}
             </div>
 
-            {edges.map((e, idx) => (
-              <BezierEdge key={idx} fromId={e.from} toId={e.to} containerRef={canvasRef} zoom={zoom} />
-            ))}
+            {edges.map((e, idx) => {
+              const isHi = selectedNodeId ? connectedSet.has(e.from) && connectedSet.has(e.to) : false;
+              const isDim = selectedNodeId ? !isHi : false;
+              return (
+                <BezierEdge
+                  key={idx}
+                  fromId={e.from}
+                  toId={e.to}
+                  containerRef={canvasRef}
+                  zoom={zoom}
+                  highlighted={isHi}
+                  dimmed={isDim}
+                  dragTick={dragTick}
+                />
+              );
+            })}
           </div>
         </div>
 
@@ -2142,6 +2266,7 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
           <span className="legend-item"><span className="legend-color-dot event" /> EventCollection</span>
           <span className="legend-item"><span className="legend-color-dot finding" /> FindingCollection</span>
           <span className="legend-item"><span className="legend-color-dot export" /> Export</span>
+          <span style={{ marginLeft: "auto", fontStyle: "italic", fontSize: 8 }}>Drag nodes to rearrange · Click node to trace lineage path</span>
         </div>
       </div>
     );
@@ -2159,6 +2284,7 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
   }
 
   const treeEdges = response.results.map((r) => ({ from: "tree-evidence-node", to: `tree-result-${r.id}` }));
+  const connectedSet = getConnectedNodes(selectedNodeId, treeEdges);
 
   return (
     <div className="graph-view-wrapper">
@@ -2174,20 +2300,21 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
         <div className="graph-controls-group">
           <button className="graph-zoom-btn" onClick={() => setZoom((z) => Math.min(z + 0.15, 2))}>＋ Zoom</button>
           <button className="graph-zoom-btn" onClick={() => setZoom((z) => Math.max(z - 0.15, 0.4))}>－ Zoom</button>
-          <button className="graph-zoom-btn" onClick={() => setZoom(1)}>↺ Reset</button>
+          <button className="graph-zoom-btn" onClick={() => { setZoom(1); setNodeOffsets({}); }}>↺ Reset</button>
         </div>
       </div>
 
       <div className="graph-canvas-container" ref={canvasRef}>
         <div className="graph-content-scaler" style={{ transform: `scale(${zoom})` }}>
           <div className="graph-nodes-layer" style={{ alignItems: "flex-start", gap: 56 }}>
-
             {/* Evidence root with expandable tree */}
             <div className="graph-stage-column" style={{ minWidth: 260, maxWidth: 320 }}>
               <div className="graph-stage-header">Evidence Root <span className="graph-stage-badge">{artifacts.length} files</span></div>
               <div
                 id="tree-evidence-node"
-                className={`graph-card-node source-card ${selectedNodeId === "tree-evidence-node" ? "selected" : ""}`}
+                className={`graph-card-node source-card ${selectedNodeId === "tree-evidence-node" ? "selected" : ""} ${selectedNodeId && !connectedSet.has("tree-evidence-node") ? "dimmed" : ""}`}
+                style={nodeOffsets["tree-evidence-node"] ? { transform: `translate(${nodeOffsets["tree-evidence-node"].x}px, ${nodeOffsets["tree-evidence-node"].y}px)` } : undefined}
+                onMouseDown={(e) => handleDragStart("tree-evidence-node", e)}
                 onClick={() => setSelectedNodeId("tree-evidence-node")}
               >
                 <div className="graph-card-head">
@@ -2234,12 +2361,15 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
                 const cap = step?.capability ?? result.operation_id ?? "operation";
                 const count = Array.isArray(result.value) ? result.value.length : undefined;
                 const typeKey = result.type.toLowerCase().replace("collection", "").trim();
+                const resId = `tree-result-${result.id}`;
                 return (
                   <div
                     key={result.id}
-                    id={`tree-result-${result.id}`}
-                    className={`graph-card-node result-card-node ${typeKey}-type ${selectedNodeId === result.id ? "selected" : ""}`}
-                    onClick={() => setSelectedNodeId(result.id)}
+                    id={resId}
+                    className={`graph-card-node result-card-node ${typeKey}-type ${selectedNodeId === resId ? "selected" : ""} ${selectedNodeId && !connectedSet.has(resId) ? "dimmed" : ""}`}
+                    style={nodeOffsets[resId] ? { transform: `translate(${nodeOffsets[resId].x}px, ${nodeOffsets[resId].y}px)` } : undefined}
+                    onMouseDown={(e) => handleDragStart(resId, e)}
+                    onClick={() => setSelectedNodeId(resId)}
                   >
                     <div className="graph-card-head">
                       <span className="graph-card-type">{result.type}</span>
@@ -2253,9 +2383,24 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
             </div>
           </div>
 
-          {treeEdges.map((e, idx) => (
-            <BezierEdge key={idx} fromId={e.from} toId={e.to} containerRef={canvasRef} zoom={zoom} />
-          ))}
+          {treeEdges.map((e, idx) => {
+            const isHi = selectedNodeId ? connectedSet.has(e.from) && connectedSet.has(e.to) : false;
+            const isDim = selectedNodeId ? !isHi : false;
+            return (
+              <BezierEdge
+                key={idx}
+                fromId={e.from}
+                toId={e.to}
+                containerRef={canvasRef}
+                zoom={zoom}
+                highlighted={isHi}
+                dimmed={isDim}
+                portIndex={idx}
+                portTotal={treeEdges.length}
+                dragTick={dragTick}
+              />
+            );
+          })}
         </div>
       </div>
 
@@ -2265,62 +2410,144 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
         <span className="legend-item"><span className="legend-color-dot meta" /> Metadata</span>
         <span className="legend-item"><span className="legend-color-dot event" /> Events</span>
         <span className="legend-item"><span className="legend-color-dot finding" /> Findings</span>
-        <span style={{ marginLeft: "auto", fontStyle: "italic", fontSize: 8 }}>Click nodes · Expand tree folders</span>
+        <span style={{ marginLeft: "auto", fontStyle: "italic", fontSize: 8 }}>Evenly spaced ports · Drag nodes to arrange · Select node to highlight lineage</span>
       </div>
     </div>
   );
 }
 
+type BlockCategory = "import-source" | "transform" | "export";
+
+interface VisualBlock {
+  id: string;
+  category: BlockCategory;
+  title: string;
+  operation: string;
+  detail: string;
+}
 
 function Blocks({ activeSource }: { activeSource: string }) {
-  const blocks: Array<{ name: string; operations: string[] }> = [];
-  let curBlock = { name: "initial", operations: [] as string[] };
+  const [blockList, setBlockList] = useState<VisualBlock[]>([
+    { id: "blk-1", category: "import-source", title: "Evidence Source Provider", operation: 'evidence.import "Sources/Valora"', detail: "Source provider block · Registers external evidence" },
+    { id: "blk-2", category: "transform", title: "Materialize Evidence", operation: 'copy source as "working_evidence"', detail: "Creates read-only materialized working copy" },
+    { id: "blk-3", category: "transform", title: "List Artifacts", operation: "files.list working", detail: "Enumerates all files & directories inside workspace" },
+    { id: "blk-4", category: "transform", title: "Filter Suspicious Files", operation: 'filter(extension == ".zip" | ".elf" | ".exe") from artifacts', detail: "Criteria-based narrow triage filter" },
+    { id: "blk-5", category: "transform", title: "Deep Metadata Extraction", operation: "metadata.extract suspicious", detail: "Extracts archive, binary, image & filesystem metadata" },
+    { id: "blk-6", category: "transform", title: "Extract Log Events", operation: "events.extract from artifacts", detail: "Parses ISO 8601 UTC timestamped event streams" },
+    { id: "blk-7", category: "transform", title: "Multi-Vector Correlation", operation: "correlate(suspicious, metadata, events)", detail: "Cross-correlates artifacts, metadata & timeline events" },
+    { id: "blk-8", category: "export", title: "Disk Export Sink", operation: 'export findings > "./Outputs/findings.json"', detail: "Persists deterministic JSON report to disk" },
+  ]);
 
-  for (const raw of activeSource.split("\n")) {
-    const line = raw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const stageMatch = line.match(/^\[([a-zA-Z0-9_\-]+)\]$/);
-    if (stageMatch) {
-      if (curBlock.operations.length || curBlock.name !== "initial") {
-        blocks.push(curBlock);
-      }
-      curBlock = { name: stageMatch[1], operations: [] };
+  const addBlock = (cat: BlockCategory) => {
+    const newId = `blk-${Date.now().toString(36).slice(-4)}`;
+    if (cat === "import-source") {
+      setBlockList((prev) => [...prev, { id: newId, category: cat, title: "Import Source Provider", operation: 'evidence.import "Sources/Evidence"', detail: "Output-only source block" }]);
+    } else if (cat === "transform") {
+      setBlockList((prev) => [...prev, { id: newId, category: cat, title: "Analysis Transform", operation: "metadata.extract artifacts", detail: "Transforms connected inputs into typed collections" }]);
     } else {
-      curBlock.operations.push(line);
+      setBlockList((prev) => [...prev, { id: newId, category: cat, title: "Export Sink", operation: 'export findings > "./Outputs/export.json"', detail: "Exports connected results to workspace disk" }]);
     }
-  }
-  if (curBlock.operations.length || curBlock.name !== "initial") {
-    blocks.push(curBlock);
-  }
+  };
+
+  const removeBlock = (id: string) => {
+    setBlockList((prev) => prev.filter((b) => b.id !== id));
+  };
+
+  const resetDemoBlocks = () => {
+    setBlockList([
+      { id: "blk-1", category: "import-source", title: "Evidence Source Provider", operation: 'evidence.import "Sources/Valora"', detail: "Source provider block · Registers external evidence" },
+      { id: "blk-2", category: "transform", title: "Materialize Evidence", operation: 'copy source as "working_evidence"', detail: "Creates read-only materialized working copy" },
+      { id: "blk-3", category: "transform", title: "List Artifacts", operation: "files.list working", detail: "Enumerates all files & directories inside workspace" },
+      { id: "blk-4", category: "transform", title: "Filter Suspicious Files", operation: 'filter(extension == ".zip" | ".elf" | ".exe") from artifacts', detail: "Criteria-based narrow triage filter" },
+      { id: "blk-5", category: "transform", title: "Deep Metadata Extraction", operation: "metadata.extract suspicious", detail: "Extracts archive, binary, image & filesystem metadata" },
+      { id: "blk-6", category: "transform", title: "Extract Log Events", operation: "events.extract from artifacts", detail: "Parses ISO 8601 UTC timestamped event streams" },
+      { id: "blk-7", category: "transform", title: "Multi-Vector Correlation", operation: "correlate(suspicious, metadata, events)", detail: "Cross-correlates artifacts, metadata & timeline events" },
+      { id: "blk-8", category: "export", title: "Disk Export Sink", operation: 'export findings > "./Outputs/findings.json"', detail: "Persists deterministic JSON report to disk" },
+    ]);
+  };
+
+  const imports = blockList.filter((b) => b.category === "import-source");
+  const transforms = blockList.filter((b) => b.category === "transform");
+  const exports = blockList.filter((b) => b.category === "export");
 
   return (
-    <div className="placeholder blocks-view-container">
-      <small>BUILDING BLOCKS</small>
-      <h1>Visual Workflow Preview</h1>
-      <p>Dual representation: JOCKY source synchronized with Investigation IR execution stages.</p>
-      <div className="blocks-canvas">
-        {blocks.length === 0 ? (
-          <div className="sidebar-empty">No investigation stages found in active procedure.</div>
-        ) : (
-          blocks.map((b, idx) => (
-            <div key={b.name} className="block-stage-wrapper">
-              <article className="flow-block">
-                <header className="flow-block-header">
-                  <span className="stage-num">0{idx + 1}</span>
-                  <strong>[{b.name}]</strong>
-                </header>
-                <div className="flow-block-ops">
-                  {b.operations.map((op, opIdx) => (
-                    <div key={opIdx} className="op-chip">
-                      <code>{op}</code>
-                    </div>
-                  ))}
-                </div>
-              </article>
-              {idx < blocks.length - 1 && <div className="block-connector">↓</div>}
+    <div className="building-blocks-wrapper">
+      <header className="blocks-top-toolbar">
+        <div className="blocks-title-group">
+          <small>BUILDING BLOCKS WORKSPACE</small>
+          <h2>Visual Forensic Workflow Blocks</h2>
+        </div>
+        <div className="blocks-action-btns">
+          <button className="btn-block-action" onClick={() => addBlock("import-source")}>+ Import Source Block</button>
+          <button className="btn-block-action" onClick={() => addBlock("transform")}>+ Transform Block</button>
+          <button className="btn-block-action" onClick={() => addBlock("export")}>+ Export Sink Block</button>
+          <button className="btn-block-action primary" onClick={resetDemoBlocks}>⚡ Reset Demo Blocks</button>
+        </div>
+      </header>
+
+      <div className="blocks-canvas-area">
+        <div className="blocks-grid-flow">
+          {/* Column 1: Import Sources */}
+          <div className="block-column-group">
+            <div className="block-column-header">
+              <span>01 · SOURCES &amp; IMPORTS</span>
+              <span className="graph-stage-badge">{imports.length}</span>
             </div>
-          ))
-        )}
+            {imports.map((b) => (
+              <div key={b.id} className="block-card-item type-import">
+                <div className="block-card-head">
+                  <span>SOURCE PROVIDER</span>
+                  <button className="tiny-button" onClick={() => removeBlock(b.id)}>×</button>
+                </div>
+                <div className="block-card-title"><Icon name="source" /> {b.title}</div>
+                <code className="block-card-code">{b.operation}</code>
+                <small className="graph-card-detail">{b.detail}</small>
+                <div className="block-port-out" title="Connects to transform blocks" />
+              </div>
+            ))}
+          </div>
+
+          {/* Column 2: Transform / Analysis Blocks */}
+          <div className="block-column-group" style={{ minWidth: 260 }}>
+            <div className="block-column-header">
+              <span>02 · TRANSFORM &amp; ANALYSIS</span>
+              <span className="graph-stage-badge">{transforms.length}</span>
+            </div>
+            {transforms.map((b) => (
+              <div key={b.id} className="block-card-item type-transform">
+                <div className="block-card-head">
+                  <span>IMPLICIT CONNECTED CAPABILITY</span>
+                  <button className="tiny-button" onClick={() => removeBlock(b.id)}>×</button>
+                </div>
+                <div className="block-card-title"><Icon name="procedure" /> {b.title}</div>
+                <code className="block-card-code">{b.operation}</code>
+                <small className="graph-card-detail">{b.detail}</small>
+                <div className="block-port-in" title="Receives input from upstream blocks" />
+                <div className="block-port-out" title="Passes output to downstream blocks" />
+              </div>
+            ))}
+          </div>
+
+          {/* Column 3: Export Sinks */}
+          <div className="block-column-group">
+            <div className="block-column-header">
+              <span>03 · PERSISTENCE &amp; EXPORT</span>
+              <span className="graph-stage-badge">{exports.length}</span>
+            </div>
+            {exports.map((b) => (
+              <div key={b.id} className="block-card-item type-export">
+                <div className="block-card-head">
+                  <span>DISK EXPORT SINK</span>
+                  <button className="tiny-button" onClick={() => removeBlock(b.id)}>×</button>
+                </div>
+                <div className="block-card-title"><Icon name="save" /> {b.title}</div>
+                <code className="block-card-code">{b.operation}</code>
+                <small className="graph-card-detail">{b.detail}</small>
+                <div className="block-port-in" title="Receives connected findings / collections" />
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -2330,7 +2557,7 @@ function Docs() {
   const [copiedScript, setCopiedScript] = useState(false);
 
   const demoScript = `# JOCKY Forensic Investigation Procedure
-# SIH Problem Statement 26148 - Digital Forensics DSL
+# Digital Forensics DSL
 
 [prepare]
     source = evidence.import "C:\\Users\\XYLA\\Downloads\\Valora"
@@ -2560,7 +2787,7 @@ function Help() {
     <div className="placeholder">
       <small>ABOUT EVIDRA</small>
       <h1>Evidra Forensic Workstation</h1>
-      <p>Evidra is a local-first digital forensics platform designed for SIH Problem Statement 26148.</p>
+      <p>Evidra is a local-first digital forensics platform for forensic examination and investigation.</p>
       <p>It combines the JOCKY Domain-Specific Language, typed Investigation IR, and capability negotiation into an auditable, portable investigation workflow.</p>
     </div>
   );
