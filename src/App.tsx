@@ -160,8 +160,10 @@ function CaseGate({ onOpen }: { onOpen: () => void }) {
         root,
         folders: recommended ? ["Evidence", "Analysis", "Outputs"] : [],
       });
-      sessionStorage.setItem("evidra.caseId", id);
-      sessionStorage.setItem("evidra.caseName", snapshot.case?.name ?? name);
+      const persistentId = snapshot.case?.id ?? id;
+      const persistentName = snapshot.case?.name ?? name;
+      sessionStorage.setItem("evidra.caseId", persistentId);
+      sessionStorage.setItem("evidra.caseName", persistentName);
       sessionStorage.setItem("evidra.caseRoot", root);
       onOpen();
     } catch (error) {
@@ -226,6 +228,7 @@ function Workspace() {
   const [openDocs, setOpenDocs] = useState<OpenDoc[]>([]);
   const [activeDocPath, setActiveDocPath] = useState<string | null>(null);
   const [response, setResponse] = useState<RuntimeExecutionResponse | null>(null);
+  const [runHistory, setRunHistory] = useState<{ scriptName: string; docPath: string; response: RuntimeExecutionResponse }[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [notice, setNotice] = useState("");
   const [dialog, setDialog] = useState<FileDialog>(null);
@@ -529,6 +532,18 @@ function Workspace() {
     try {
       const result = await client.execute(source, evidence?.root, caseId);
       setResponse(result);
+      const scriptName = activeDocPath ? activeDocPath.split(/[/\\]/).pop() ?? "script.jocky" : "script.jocky";
+      const docPath = activeDocPath ?? "";
+      setRunHistory((prev) => {
+        // Replace existing entry for the same file, or append new entry
+        const existing = prev.findIndex((r) => r.docPath === docPath);
+        if (existing >= 0) {
+          const next = [...prev];
+          next[existing] = { scriptName, docPath, response: result };
+          return next;
+        }
+        return [...prev, { scriptName, docPath, response: result }];
+      });
       setSideView("RUNS");
       await refreshTree();
       await refresh();
@@ -662,7 +677,7 @@ function Workspace() {
             />
           )}
 
-          {view === "GRAPH" && <Graph response={response} />}
+          {view === "GRAPH" && <Graph response={response} runHistory={runHistory} />}
 
           {view === "BLOCKS" && <Blocks activeSource={activeDoc?.content ?? blankSource} />}
 
@@ -2193,15 +2208,29 @@ function getConnectedNodes(selectedId: string | null, edges: { from: string; to:
   return connected;
 }
 
-function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
+function Graph({
+  response,
+  runHistory,
+}: {
+  response: RuntimeExecutionResponse | null;
+  runHistory: { scriptName: string; docPath: string; response: RuntimeExecutionResponse }[];
+}) {
   const [graphMode, setGraphMode] = useState<GraphMode>("pipeline");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(["artifacts"]));
   const [nodeOffsets, setNodeOffsets] = useState<Record<string, { x: number; y: number }>>({});
   const [dragTick, setDragTick] = useState(0);
+  const [selectedRunIdx, setSelectedRunIdx] = useState<number>(0);
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<{ id: string; startX: number; startY: number; initX: number; initY: number } | null>(null);
+
+  // When runHistory changes, auto-select the latest run
+  const prevHistLen = useRef(0);
+  if (runHistory.length !== prevHistLen.current) {
+    prevHistLen.current = runHistory.length;
+    if (runHistory.length > 0) setSelectedRunIdx(runHistory.length - 1);
+  }
 
   const handleDragStart = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -2227,7 +2256,11 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
     window.addEventListener("mouseup", handleMouseUp);
   };
 
-  if (!response) {
+  // Resolve which response to display — prefer runHistory selection, fallback to last response
+  const activeResponse: RuntimeExecutionResponse | null =
+    runHistory.length > 0 ? runHistory[Math.min(selectedRunIdx, runHistory.length - 1)].response : response;
+
+  if (!activeResponse) {
     return (
       <div className="placeholder">
         <small>INVESTIGATION GRAPH</small>
@@ -2237,9 +2270,28 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
     );
   }
 
-  const srcRef = response.context?.source_reference ?? "EVID-001";
-  const srcName = response.context?.source_path
-    ? response.context.source_path.split(/[/\\]/).pop()
+  // Script selector bar (shown if more than one run exists)
+  const scriptSelectorBar = runHistory.length > 1 ? (
+    <div className="graph-script-selector-bar">
+      <small>SCRIPT RUN:</small>
+      {runHistory.map((r, i) => (
+        <button
+          key={i}
+          className={`graph-script-tab ${i === Math.min(selectedRunIdx, runHistory.length - 1) ? "active" : ""}`}
+          onClick={() => { setSelectedRunIdx(i); setNodeOffsets({}); setSelectedNodeId(null); setZoom(1); }}
+        >
+          {r.scriptName}
+        </button>
+      ))}
+    </div>
+  ) : null;
+
+  // Use activeResponse for all graph computation below
+  const response2 = activeResponse;
+
+  const srcRef = response2.context?.source_reference ?? "EVID-001";
+  const srcName = response2.context?.source_path
+    ? response2.context.source_path.split(/[/\\]/).pop()
     : "Evidence Root";
 
   const toggleFolder = (key: string) => {
@@ -2253,11 +2305,11 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
   /* ── Pipeline Lineage Graph ── */
   if (graphMode === "pipeline") {
     const edges: { from: string; to: string }[] = [];
-    response.results.forEach((r, i) => {
+    response2.results.forEach((r, i) => {
       if (i === 0) {
         edges.push({ from: "node-source", to: `node-op-${r.id}` });
       } else {
-        edges.push({ from: `node-result-${response.results[i - 1].id}`, to: `node-op-${r.id}` });
+        edges.push({ from: `node-result-${response2.results[i - 1].id}`, to: `node-op-${r.id}` });
       }
       edges.push({ from: `node-op-${r.id}`, to: `node-result-${r.id}` });
     });
@@ -2282,6 +2334,8 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
           </div>
         </div>
 
+        {scriptSelectorBar}
+
         <div className="graph-canvas-container" ref={canvasRef}>
           <div className="graph-content-scaler" style={{ transform: `scale(${zoom})` }}>
             <div className="graph-nodes-layer">
@@ -2300,8 +2354,8 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
                 />
               </div>
 
-              {response.results.map((result) => {
-                const step = response.steps.find((s) => s.operation_id === result.operation_id);
+              {response2.results.map((result) => {
+                const step = response2.steps.find((s) => s.operation_id === result.operation_id);
                 const cap = step?.capability ?? result.operation_id ?? "operation";
                 const count = Array.isArray(result.value) ? result.value.length : undefined;
                 const opId = `node-op-${result.id}`;
@@ -2374,7 +2428,7 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
   }
 
   /* ── Evidence & Artifact Tree Graph ── */
-  const artifactResult = response.results.find((r) => r.type === "ArtifactCollection" && Array.isArray(r.value));
+  const artifactResult = response2.results.find((r) => r.type === "ArtifactCollection" && Array.isArray(r.value));
   const artifacts = (artifactResult?.value as Array<{ id: string; name: string; extension: string; size_bytes: number }> | undefined) ?? [];
 
   const extGroups: Record<string, typeof artifacts> = {};
@@ -2384,7 +2438,7 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
     extGroups[grp].push(art);
   }
 
-  const treeEdges = response.results.map((r) => ({ from: "tree-evidence-node", to: `tree-result-${r.id}` }));
+  const treeEdges = response2.results.map((r) => ({ from: "tree-evidence-node", to: `tree-result-${r.id}` }));
   const connectedSet = getConnectedNodes(selectedNodeId, treeEdges);
 
   return (
@@ -2404,6 +2458,8 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
           <button className="graph-zoom-btn" onClick={() => { setZoom(1); setNodeOffsets({}); }}>↺ Reset</button>
         </div>
       </div>
+
+      {scriptSelectorBar}
 
       <div className="graph-canvas-container" ref={canvasRef}>
         <div className="graph-content-scaler" style={{ transform: `scale(${zoom})` }}>
@@ -2456,9 +2512,9 @@ function Graph({ response }: { response: RuntimeExecutionResponse | null }) {
 
             {/* Analysis columns */}
             <div className="graph-stage-column" style={{ gap: 20 }}>
-              <div className="graph-stage-header">Analysis &amp; Outputs <span className="graph-stage-badge">{response.results.length} ops</span></div>
-              {response.results.map((result) => {
-                const step = response.steps.find((s) => s.operation_id === result.operation_id);
+              <div className="graph-stage-header">Analysis &amp; Outputs <span className="graph-stage-badge">{response2.results.length} ops</span></div>
+              {response2.results.map((result) => {
+                const step = response2.steps.find((s) => s.operation_id === result.operation_id);
                 const cap = step?.capability ?? result.operation_id ?? "operation";
                 const count = Array.isArray(result.value) ? result.value.length : undefined;
                 const typeKey = result.type.toLowerCase().replace("collection", "").trim();
@@ -2668,11 +2724,13 @@ function Docs() {
     artifacts = files.list working
     suspicious = filter(extension == ".zip" | ".elf" | ".exe" | ".png") from artifacts
     metadata = metadata.extract suspicious
+    prefetch = prefetch.extract artifacts
+    iocs = ioc.match artifacts
 
 [analysis]
     events = events.extract from artifacts
     timeline = timeline.build from events
-    findings = correlate(suspicious, metadata, events)
+    findings = correlate(suspicious, metadata, events, prefetch, iocs)
 
 [export]
     export findings > "./Outputs/findings.json"`;
@@ -2718,8 +2776,8 @@ function Docs() {
             </tr>
             <tr>
               <td><code>[analysis]</code></td>
-              <td>Event Reconstruction & Correlation</td>
-              <td>Timestamped event extraction (<code>events.extract</code>), timeline sequencing (<code>timeline.build</code>), and cross-collection correlation (<code>correlate</code>).</td>
+              <td>Event Reconstruction &amp; Correlation</td>
+              <td>Timestamped event extraction (<code>events.extract</code>), prefetch execution analysis (<code>prefetch.extract</code>), threat IOC matching (<code>ioc.match</code>), timeline sequencing (<code>timeline.build</code>), and cross-collection correlation (<code>correlate</code>).</td>
             </tr>
             <tr>
               <td><code>[export]</code></td>
@@ -2793,6 +2851,18 @@ function Docs() {
               <td><code>events = events.extract from artifacts</code></td>
             </tr>
             <tr>
+              <td><code>prefetch.extract</code></td>
+              <td><code>ArtifactCollection</code></td>
+              <td><code>PrefetchCollection</code></td>
+              <td><code>prefetch = prefetch.extract artifacts</code></td>
+            </tr>
+            <tr>
+              <td><code>ioc.match</code></td>
+              <td><code>ArtifactCollection</code></td>
+              <td><code>IOCCollection</code></td>
+              <td><code>iocs = ioc.match artifacts</code></td>
+            </tr>
+            <tr>
               <td><code>timeline.build</code></td>
               <td><code>EventCollection</code></td>
               <td><code>Timeline</code></td>
@@ -2802,7 +2872,7 @@ function Docs() {
               <td><code>correlate</code></td>
               <td>Multiple Collections</td>
               <td><code>FindingCollection</code></td>
-              <td><code>findings = correlate(suspicious, metadata, events)</code></td>
+              <td><code>findings = correlate(suspicious, metadata, events, prefetch, iocs)</code></td>
             </tr>
             <tr>
               <td><code>export</code></td>

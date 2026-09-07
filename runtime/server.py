@@ -103,8 +103,43 @@ class EvidraRequestHandler(BaseHTTPRequestHandler):
             root.mkdir(parents=True, exist_ok=True)
             internal = root / ".evidra"
             internal.mkdir(exist_ok=True)
+            manifest_file = internal / "manifest.json"
+            if manifest_file.exists():
+                try:
+                    meta = json.loads(manifest_file.read_text(encoding="utf-8"))
+                    if isinstance(meta, dict) and meta.get("case_id"):
+                        case_id = meta["case_id"]
+                        if meta.get("name"):
+                            name = meta["name"]
+                except Exception:
+                    pass
+            else:
+                manifest_file.write_text(json.dumps({"case_id": case_id, "name": name}, indent=2), encoding="utf-8")
+
             for folder in folders:
                 (root / str(folder)).mkdir(parents=True, exist_ok=True)
+
+            template_file = root / "template.jocky"
+            if not template_file.exists() and not list(root.glob("*.jocky")):
+                template_file.write_text(
+                    "# JOCKY Forensic Investigation Procedure\n\n"
+                    "[prepare]\n"
+                    '    source = evidence.import "C:\\\\Users\\\\XYLA\\\\Downloads\\\\Valora"\n'
+                    '    working = copy source as "working_evidence"\n\n'
+                    "[examine]\n"
+                    "    artifacts = files.list working\n"
+                    '    suspicious = filter(extension == ".zip" | ".elf" | ".exe" | ".png") from artifacts\n'
+                    "    metadata = metadata.extract suspicious\n"
+                    "    prefetch = prefetch.extract artifacts\n"
+                    "    iocs = ioc.match artifacts\n\n"
+                    "[analysis]\n"
+                    "    events = events.extract from artifacts\n"
+                    "    timeline = timeline.build from events\n"
+                    "    findings = correlate(suspicious, metadata, events, prefetch, iocs)\n\n"
+                    "[export]\n"
+                    '    export findings > "./Outputs/findings.json"\n',
+                    encoding="utf-8",
+                )
         except OSError as error:
             self._send_json({"error": f"case creation failed: {error}"}, 400)
             return

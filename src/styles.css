@@ -349,6 +349,13 @@ body.resizing-active * {
 .status-spacer { flex: 1; }
 .status-notice { background: transparent !important; border: 0 !important; color: #6fbfa9 !important; font-weight: 700; font-size: 9px !important; }
 
+/* Graph Script Selector Bar */
+.graph-script-selector-bar { display: flex; align-items: center; gap: 6px; padding: 5px 14px; background: #eef2f4; border-bottom: 1px solid #cad7dc; flex-shrink: 0; }
+.graph-script-selector-bar small { font-size: 8px; font-weight: 800; color: #678391; text-transform: uppercase; letter-spacing: 0.5px; margin-right: 4px; }
+.graph-script-tab { padding: 3px 12px; font-size: 10px; font-weight: 600; border: 1px solid #c0d0da; border-radius: 12px; background: #f8fbfc; color: #3a5a6b; cursor: pointer; transition: all 0.15s; }
+.graph-script-tab:hover { background: #ddeaf0; border-color: #9ab3c0; }
+.graph-script-tab.active { background: #2d7da6; color: #fff; border-color: #2d7da6; }
+
 /* Graph Legend & Status */
 .graph-bottom-legend { display: flex; align-items: center; gap: 16px; padding: 8px 18px; background: #f4f7f8; border-top: 1px solid #cad7dc; font-size: 8px; color: #587382; flex-shrink: 0; }
 .legend-item { display: flex; align-items: center; gap: 5px; font-weight: 600; }
