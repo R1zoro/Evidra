@@ -100,20 +100,54 @@ For a deep-dive technical reference on graph mathematics, IR translation, keywor
 
 ---
 
-## ⚙️ Quick Start & Running Tests
+## ⚙️ Quick Start & Execution
 
 ### Prerequisites
-- Node.js 18+ & npm
-- Python 3.10+
+- **Node.js**: 18.0 or higher
+- **Python**: 3.10 or higher
 
-### Installation & Execution
+### 1. Installation & Environment Setup
+Run these one-time commands to prepare Node and Python dependencies:
+
 ```bash
 # 1. Install frontend dependencies
 npm install
 
-# 2. Run TypeScript build check
-npm run check
+# 2. Verify Python runtime environment (0 external dependencies required currently)
+pip install -r requirements.txt
+```
 
-# 3. Launch Desktop Application (Electron + Local Python Server)
+---
+
+### 2. Running Evidra
+
+#### 🖥️ Option A: Native Desktop App (1-Command — Recommended)
+For the desktop app, simply run:
+
+```bash
 npm run electron:dev
+```
+> **Note**: Electron automatically spawns both the Python runtime server (`runtime/server.py`) and Vite renderer in the background. **No separate terminal commands needed!**
+
+---
+
+#### 🌐 Option B: Web Browser Development Mode
+If you prefer running in a web browser, open two terminals:
+
+1. **Terminal 1 (Backend Server)**:
+   ```bash
+   python runtime/server.py
+   ```
+2. **Terminal 2 (Frontend Dev Server)**:
+   ```bash
+   npm run dev
+   # Opens browser at http://localhost:5173
+   ```
+
+---
+
+### 3. Verification & Build Check
+```bash
+# Run TypeScript compilation and Vite build check
+npm run check
 ```

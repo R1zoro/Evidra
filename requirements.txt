@@ -1,0 +1,12 @@
+# Evidra Digital Forensic Workstation — Python Runtime Dependencies
+# Python Version Requirement: 3.10+
+#
+# Currently, the Evidra backend service runs on 100% Python Standard Library modules
+# (http.server, sqlite3, hashlib, json, pathlib, uuid, base64).
+#
+# When adding new third-party Python packages (e.g. pefile, yara-python, pandas):
+# 1. Install package:  pip install <package_name>
+# 2. Update this file: pip freeze > requirements.txt
+# 3. Commit requirements.txt to Git.
+#
+# Team setup command: pip install -r requirements.txt
