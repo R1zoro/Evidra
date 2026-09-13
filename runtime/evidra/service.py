@@ -32,7 +32,7 @@ class RuntimeService:
             return {"case": None, "procedures": [], "runs": []}
         return self.store.get_case_snapshot(case_id)
 
-    def execute(self, source: str, evidence_root: str | Path, case_id: str = "CASE-001") -> dict[str, Any]:
+    def execute(self, source: str, evidence_root: str | Path, case_id: str = "CASE-001", script_name: str = "") -> dict[str, Any]:
         procedure = parse_procedure(source)
         ir = lower_to_ir(procedure)
         if ir.diagnostics:
@@ -43,7 +43,17 @@ class RuntimeService:
         except ValueError as error:
             return {"status": "failed", "diagnostics": [str(error)], "steps": [], "results": []}
         workspace = self.store.get_workspace(case_id) if self.store else None
-        run = execute_ir(ir, resolved_root, workspace_root=workspace)
+        
+        cache_lookup = self.store.get_cached_result if self.store else None
+        on_cache_miss = self.store.save_cached_result if self.store else None
+        
+        run = execute_ir(
+            ir, 
+            resolved_root, 
+            workspace_root=workspace,
+            cache_lookup=cache_lookup,
+            on_cache_miss=on_cache_miss
+        )
         response = {
             "status": run.status,
             "diagnostics": [],
@@ -62,7 +72,7 @@ class RuntimeService:
             ],
         }
         if self.store:
-            response["run_id"] = self.store.save_execution(case_id, source, response)
+            response["run_id"] = self.store.save_execution(case_id, source, response, script_name=script_name)
         response["context"] = {"source_reference": reference, "source_path": str(resolved_root)}
         return response
 

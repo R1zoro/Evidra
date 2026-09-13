@@ -28,6 +28,16 @@ class EvidraRequestHandler(BaseHTTPRequestHandler):
             case_id = parsed.path.removeprefix("/api/cases/").removesuffix("/runs")
             self._send_json({"case_id": case_id, "runs": self.service.snapshot(case_id).get("runs", [])})
             return
+        if parsed.path.startswith("/api/cases/") and "/runs/" in parsed.path:
+            parts = parsed.path.removeprefix("/api/cases/").split("/runs/")
+            if len(parts) == 2:
+                case_id, run_id = parts
+                run = self.service.store.get_run(case_id, run_id)
+                if run:
+                    self._send_json({"case_id": case_id, "run": run})
+                else:
+                    self._send_json({"error": "run not found"}, 404)
+                return
         if parsed.path.startswith("/api/cases/") and "/fs/tree" in parsed.path:
             case_id = parsed.path.removeprefix("/api/cases/").removesuffix("/fs/tree").split("/")[0]
             self._get_fs_tree(case_id)
@@ -44,11 +54,7 @@ class EvidraRequestHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self.send_response(204)
-        origin = self._allowed_origin()
-        if origin:
-            self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self._send_cors_headers()
         self.end_headers()
 
     def do_POST(self) -> None:  # noqa: N802
@@ -90,7 +96,16 @@ class EvidraRequestHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/execute":
             evidence_root = body.get("evidence_root") or str(self.fixture_root)
-            self._send_json(self.service.execute(str(body.get("source", "")), evidence_root, str(body.get("case_id", "CASE-001"))))
+            try:
+                result = self.service.execute(
+                    str(body.get("source", "")),
+                    evidence_root,
+                    str(body.get("case_id", "CASE-001")),
+                    script_name=str(body.get("script_name") or ""),
+                )
+                self._send_json(result)
+            except Exception as error:
+                self._send_json({"status": "failed", "diagnostics": [str(error)], "steps": [], "results": []}, 500)
             return
         self._send_json({"error": "route not found"}, 404)
 
@@ -241,7 +256,7 @@ class EvidraRequestHandler(BaseHTTPRequestHandler):
         try:
             entries = sorted(current.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
             for entry in entries:
-                if entry.name == ".evidra" or entry.name.startswith("."):
+                if entry.name.startswith(".") or entry.name in {"node_modules", "__pycache__", ".pytest_cache"}:
                     continue
                 rel = entry.relative_to(root).as_posix()
                 if entry.is_dir():
@@ -370,20 +385,18 @@ class EvidraRequestHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
-        origin = self._allowed_origin()
-        if origin:
-            self.send_header("Access-Control-Allow-Origin", origin)
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self._send_cors_headers()
         self.end_headers()
         self.wfile.write(encoded)
 
-    def _allowed_origin(self) -> str | None:
-        origin = self.headers.get("Origin", "")
-        parsed = urlparse(origin)
-        if parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}:
-            return origin
-        return None
+    def _send_cors_headers(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin and origin != "null":
+            self.send_header("Access-Control-Allow-Origin", origin)
+        else:
+            self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Requested-With")
 
 
 def create_server(host: str = "127.0.0.1", port: int = 8765) -> ThreadingHTTPServer:

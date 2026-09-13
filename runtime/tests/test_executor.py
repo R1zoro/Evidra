@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 from pathlib import Path
 
 from evidra import execute_ir
@@ -29,7 +29,7 @@ class ExecutorTests(unittest.TestCase):
         suspicious = filter(extension == \".zip\") from artifacts
         """
         run = execute_ir(lower_to_ir(parse_procedure(source)), FIXTURE)
-        self.assertEqual([step.status for step in run.steps], ["failed", "blocked"])
+        self.assertEqual([step.status for step in run.steps], ["failed", "skipped"])
 
     def test_import_and_search_support_an_evidence_pipeline(self) -> None:
         source = """
@@ -83,3 +83,4 @@ class ExecutorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

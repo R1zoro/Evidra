@@ -5,6 +5,14 @@ const http = require("http");
 const path = require("path");
 
 const projectRoot = path.resolve(__dirname, "..");
+
+function inside(root, target) {
+  const resolved = path.resolve(root, target);
+  if (resolved !== path.resolve(root) && !resolved.startsWith(path.resolve(root) + path.sep)) {
+    throw new Error("Path escapes case workspace");
+  }
+  return resolved;
+}
 const runtimeScript = path.join(projectRoot, "runtime", "server.py");
 let runtimeProcess = null;
 let rendererProcess = null;
@@ -18,9 +26,9 @@ function localServiceHealthy(port) {
 }
 
 async function waitForService(port) {
-  for (let attempt = 0; attempt < 24; attempt += 1) {
+  for (let attempt = 0; attempt < 35; attempt += 1) {
     if (await localServiceHealthy(port)) return true;
-    await new Promise((resolve) => setTimeout(resolve, 125));
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
   return false;
 }
@@ -29,9 +37,11 @@ async function startRuntime() {
   if (await localServiceHealthy(8765) || process.env.EVIDRA_RUNTIME_EXTERNAL === "1") return;
   if (app.isPackaged) return;
   const python = process.env.EVIDRA_PYTHON || "python";
-  runtimeProcess = spawn(python, [runtimeScript], { cwd: projectRoot, windowsHide: true, stdio: "ignore" });
-  runtimeProcess.on("error", () => { runtimeProcess = null; });
-  runtimeProcess.on("exit", () => { runtimeProcess = null; });
+  runtimeProcess = spawn(python, ["-u", runtimeScript], { cwd: projectRoot, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  if (runtimeProcess.stdout) runtimeProcess.stdout.on("data", (data) => console.log(`[Python Runtime] ${data.toString().trim()}`));
+  if (runtimeProcess.stderr) runtimeProcess.stderr.on("data", (data) => console.error(`[Python Runtime Error] ${data.toString().trim()}`));
+  runtimeProcess.on("error", (err) => { console.error("[Python Process Error]", err); runtimeProcess = null; });
+  runtimeProcess.on("exit", (code) => { if (code !== 0 && code !== null) console.warn(`[Python Runtime exited with code ${code}]`); runtimeProcess = null; });
   await waitForService(8765);
 }
 
@@ -61,8 +71,8 @@ app.whenReady().then(async () => {
   ipcMain.on("evidra:window-control", (event, action) => { const window = BrowserWindow.fromWebContents(event.sender); if (!window) return; if (action === "minimize") window.minimize(); if (action === "maximize") window.isMaximized() ? window.unmaximize() : window.maximize(); if (action === "close") window.close(); });
   ipcMain.handle("evidra:choose-directory", async () => { const result = await dialog.showOpenDialog({ title: "Choose Evidra case folder", properties: ["openDirectory", "createDirectory"] }); return result.canceled ? null : result.filePaths[0]; });
   ipcMain.handle("evidra:choose-source", async () => { const result = await dialog.showOpenDialog({ title: "Add source reference", properties: ["openFile", "openDirectory"] }); return result.canceled ? null : result.filePaths[0]; });
-  const inside = (root, target) => { const resolvedRoot = path.resolve(root); const resolvedTarget = path.resolve(target); if (resolvedTarget !== resolvedRoot && !resolvedTarget.startsWith(resolvedRoot + path.sep)) throw new Error("Path escapes case workspace"); return resolvedTarget; };
-  const tree = async (root, relative = "") => { const target = inside(root, path.join(root, relative)); const entries = await fs.readdir(target, { withFileTypes: true }); return Promise.all(entries.filter((entry) => entry.name !== ".evidra").sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name)).map(async (entry) => ({ name: entry.name, path: path.join(relative, entry.name).replace(/\\/g, "/"), kind: entry.isDirectory() ? "directory" : "file", children: entry.isDirectory() ? await tree(root, path.join(relative, entry.name)) : undefined }))); };
+  const IGNORED_NAMES = new Set([".evidra", ".git", "node_modules", "__pycache__", ".pytest_cache"]);
+  const tree = async (root, relative = "") => { const target = inside(root, path.join(root, relative)); const entries = await fs.readdir(target, { withFileTypes: true }); return Promise.all(entries.filter((entry) => !IGNORED_NAMES.has(entry.name)).sort((a, b) => Number(b.isDirectory()) - Number(a.isDirectory()) || a.name.localeCompare(b.name)).map(async (entry) => ({ name: entry.name, path: path.join(relative, entry.name).replace(/\\/g, "/"), kind: entry.isDirectory() ? "directory" : "file", children: entry.isDirectory() ? await tree(root, path.join(relative, entry.name)) : undefined }))); };
   ipcMain.handle("evidra:tree", (_, root) => tree(root));
   ipcMain.handle("evidra:read-file", async (_, root, relative) => {
     try {

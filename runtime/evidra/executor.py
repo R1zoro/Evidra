@@ -7,7 +7,7 @@ import re
 from jocky import InvestigationIR, IROperation
 
 from .filesystem_provider import FileSystemProvider
-from .results import ArtifactRecord, MetadataRecord
+from .results import ArtifactRecord, MetadataRecord, coerce_artifact
 
 
 @dataclass(frozen=True)
@@ -25,6 +25,7 @@ class ExecutionStep:
     operation_id: str
     capability: str
     status: str
+    line_number: int
     result_id: str | None = None
     message: str = ""
 
@@ -36,11 +37,29 @@ class ExecutionRun:
     results: tuple[ResultEnvelope, ...]
 
 
+from typing import Callable
+
+def compute_fingerprint(operation: IROperation, values: dict[str, object]) -> str:
+    resolved_args = []
+    for arg in operation.inputs:
+        if isinstance(arg, str) and arg.startswith("$"):
+            val = values.get(arg[1:])
+            if hasattr(val, "resolve"):
+                resolved_args.append(str(val.resolve()))
+            else:
+                resolved_args.append(repr(val))
+        else:
+            resolved_args.append(repr(arg))
+    
+    data = json.dumps({"cap": operation.capability, "args": resolved_args}, sort_keys=True)
+    return sha256(data.encode()).hexdigest()
 def execute_ir(
     ir: InvestigationIR,
     evidence_root: str | Path,
     provider: FileSystemProvider | None = None,
     workspace_root: str | Path | None = None,
+    cache_lookup: Callable[[str], dict | None] | None = None,
+    on_cache_miss: Callable[[str, str, str], None] | None = None,
 ) -> ExecutionRun:
     """Execute the safe read-only v0.1 capabilities represented by an IR."""
     provider = provider or FileSystemProvider()
@@ -53,19 +72,37 @@ def execute_ir(
 
     for operation in ir.operations:
         if any(dependency in failed_ids for dependency in operation.dependencies):
-            steps.append(ExecutionStep(operation.id, operation.capability, "blocked", message="dependency did not complete"))
+            steps.append(ExecutionStep(operation.id, operation.capability, "skipped", operation.line_number, message="dependency did not complete"))
             failed_ids.add(operation.id)
             continue
         try:
+            fingerprint = compute_fingerprint(operation, values)
+            cached = cache_lookup(fingerprint) if cache_lookup else None
+            
+            if cached:
+                cached_val = cached["value"]
+                if cached.get("type") == "ArtifactCollection" and isinstance(cached_val, list):
+                    cached_val = [coerce_artifact(x) for x in cached_val]
+                result_id = f"RES-{len(results) + 1:03d}"
+                envelope = ResultEnvelope(result_id, operation.id, cached["type"], cached_val, tuple(), "reused")
+                results.append(envelope)
+                if operation.output:
+                    values[operation.output] = cached_val
+                steps.append(ExecutionStep(operation.id, operation.capability, "reused", operation.line_number, result_id=result_id))
+                continue
+
             result_type, value, source_ids = _execute_operation(operation, values, provider, resolved_workspace)
+            if on_cache_miss:
+                on_cache_miss(fingerprint, result_type, json.dumps(_serialize_export_data(value), default=str))
+
             result_id = f"RES-{len(results) + 1:03d}"
             envelope = ResultEnvelope(result_id, operation.id, result_type, value, source_ids, "completed")
             results.append(envelope)
             if operation.output:
                 values[operation.output] = value
-            steps.append(ExecutionStep(operation.id, operation.capability, "completed", result_id=result_id))
+            steps.append(ExecutionStep(operation.id, operation.capability, "completed", operation.line_number, result_id=result_id))
         except (FileNotFoundError, ValueError, OSError) as error:
-            steps.append(ExecutionStep(operation.id, operation.capability, "failed", message=str(error)))
+            steps.append(ExecutionStep(operation.id, operation.capability, "failed", operation.line_number, message=str(error)))
             failed_ids.add(operation.id)
 
     status = "failed" if any(step.status == "failed" for step in steps) else "completed"
@@ -88,11 +125,24 @@ def _execute_operation(
         source = _resolve_path(operation.inputs, values, workspace_root)
         if workspace_root and operation.destination:
             dest = operation.destination.strip('"').strip("'").strip(">").strip()
-            target = (workspace_root / dest).resolve()
+            workspace_resolved = workspace_root.resolve()
+            target = (workspace_resolved / dest).resolve()
+            
+            if not target.is_relative_to(workspace_resolved):
+                raise ValueError(f"Copy destination '{dest}' escapes workspace bounds.")
+
             if not target.exists() and "/" not in dest and "\\" not in dest:
-                target = (workspace_root / "Evidence" / dest).resolve()
-            if target.exists():
-                return "EvidenceReference", target, tuple(operation.inputs)
+                target = (workspace_resolved / "Evidence" / dest).resolve()
+
+            if not target.exists():
+                import shutil
+                if Path(source).is_dir():
+                    shutil.copytree(source, target)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, target)
+
+            return "EvidenceReference", target, tuple(operation.inputs)
         return "EvidenceReference", source, tuple(operation.inputs)
     if operation.capability == "files.list":
         source = _resolve_path(operation.inputs, values, workspace_root)
@@ -101,6 +151,7 @@ def _execute_operation(
         source = _resolve_value(operation.inputs, values, workspace_root)
         if not isinstance(source, list):
             raise ValueError("filter requires a collection input")
+        source = [coerce_artifact(a) for a in source]
         quoted_exts = re.findall(r'"([^"]+)"', operation.expression)
         normalized_exts = {
             (ext.lower() if ext.startswith(".") else f".{ext.lower()}")
@@ -118,6 +169,7 @@ def _execute_operation(
         source = _resolve_value(operation.inputs, values, workspace_root)
         if not isinstance(source, list):
             raise ValueError("files.search requires an artifact collection")
+        source = [coerce_artifact(a) for a in source]
         pattern_match = re.search(r'"([^"]+)"', operation.expression)
         pattern = pattern_match.group(1).lower() if pattern_match else "*"
         matches = [artifact for artifact in source if _matches_pattern(getattr(artifact, "relative_path", ""), pattern)]
@@ -134,7 +186,8 @@ def _execute_operation(
             root = workspace_root
         if not isinstance(source, list):
             raise ValueError("metadata.extract requires an artifact collection")
-        return "MetadataCollection", provider.extract_metadata(root if isinstance(root, Path) else Path("."), source), tuple(operation.inputs)
+        coerced = [coerce_artifact(a) for a in source]
+        return "MetadataCollection", provider.extract_metadata(root if isinstance(root, Path) else Path("."), coerced), tuple(operation.inputs)
     if operation.capability == "hash":
         source = _resolve_value(operation.inputs, values, workspace_root)
         if isinstance(source, Path):
@@ -149,7 +202,8 @@ def _execute_operation(
         root = values.get("EVID-001")
         if not isinstance(root, Path) and workspace_root:
             root = workspace_root
-        return "EventCollection", provider.extract_events(source, source=root if isinstance(root, Path) else None), tuple(operation.inputs)
+        coerced = [coerce_artifact(a) for a in source]
+        return "EventCollection", provider.extract_events(coerced, source=root if isinstance(root, Path) else None), tuple(operation.inputs)
     if operation.capability == "timeline.build":
         source = _resolve_value(operation.inputs, values, workspace_root)
         if not isinstance(source, list):
@@ -162,12 +216,14 @@ def _execute_operation(
         root = values.get("EVID-001")
         if not isinstance(root, Path) and workspace_root:
             root = workspace_root
-        return "PrefetchCollection", provider.parse_prefetch(root if isinstance(root, Path) else Path("."), source), tuple(operation.inputs)
+        coerced = [coerce_artifact(a) for a in source]
+        return "PrefetchCollection", provider.parse_prefetch(root if isinstance(root, Path) else Path("."), coerced), tuple(operation.inputs)
     if operation.capability in {"ioc.match", "threat.match"}:
         source = _resolve_value(operation.inputs, values, workspace_root)
         if not isinstance(source, list):
             raise ValueError("ioc.match requires an artifact collection")
-        return "IOCCollection", provider.match_ioc(source), tuple(operation.inputs)
+        coerced = [coerce_artifact(a) for a in source]
+        return "IOCCollection", provider.match_ioc(coerced), tuple(operation.inputs)
     if operation.capability == "correlate":
         input_values = [_resolve_value((name,), values, workspace_root) for name in operation.inputs]
         findings = _perform_forensic_correlation(operation.inputs, input_values)
@@ -189,8 +245,18 @@ def _perform_forensic_correlation(input_names: tuple[str, ...], input_values: li
             for item in val:
                 if isinstance(item, ArtifactRecord):
                     artifacts.append(item)
+                elif isinstance(item, dict) and "relative_path" in item:
+                    artifacts.append(coerce_artifact(item))
                 elif isinstance(item, MetadataRecord):
                     metadata_list.append(item)
+                elif isinstance(item, dict) and "namespaces" in item:
+                    metadata_list.append(MetadataRecord(
+                        id=str(item.get("id", "")),
+                        artifact_id=str(item.get("artifact_id", "")),
+                        common=dict(item.get("common", {})),
+                        filesystem=dict(item.get("filesystem", {})),
+                        namespaces=dict(item.get("namespaces", {})),
+                    ))
                 elif isinstance(item, dict) and ("timestamp" in item or "kind" in item):
                     events.append(item)
 
@@ -352,8 +418,6 @@ def _resolve_value(inputs: tuple[str, ...], values: dict[str, object], workspace
             if candidate.exists():
                 return candidate.resolve()
 
-    if "EVID-001" in values:
-        return values["EVID-001"]
 
     raise ValueError(f"unknown result reference: {inputs[0]}")
 
@@ -377,3 +441,11 @@ def _hash_path(path: Path) -> str:
 def _matches_pattern(path: str, pattern: str) -> bool:
     expression = "^" + re.escape(pattern).replace(r"\*", ".*").replace(r"\?", ".") + "$"
     return bool(re.match(expression, path.lower()))
+
+
+
+
+
+
+
+

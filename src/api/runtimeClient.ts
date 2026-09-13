@@ -30,19 +30,39 @@ export interface CaseSnapshot {
   evidence: Array<{ id: string; case_id: string; name: string; root: string; file_count: number; created_at: string }>;
   sources: Array<{ id: string; case_id: string; name: string; source_path: string; fingerprint: string; status: string; created_at: string }>;
   procedures: Array<{ id: string; source: string; created_at: string }>;
-  runs: Array<{ id: string; case_id: string; procedure_id: string; status: string; created_at: string }>;
+  runs: Array<{ id: string; case_id: string; procedure_id: string; status: string; created_at: string; script_name?: string }>;
 }
 
 export class LocalRuntimeClient {
-  constructor(private readonly baseUrl = "http://127.0.0.1:8765") {}
+  constructor(
+    private readonly baseUrl = typeof window !== "undefined" && window.location.port === "5173"
+      ? ""
+      : "http://127.0.0.1:8765"
+  ) {}
 
-  async execute(source: string, evidenceRoot?: string, caseId = "CASE-001"): Promise<RuntimeExecutionResponse> {
+  async checkHealth(): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(2000) });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async execute(source: string, evidenceRoot?: string, caseId = "CASE-001", scriptName?: string): Promise<RuntimeExecutionResponse> {
     const response = await fetch(`${this.baseUrl}/api/execute`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ source, evidence_root: evidenceRoot, case_id: caseId }),
+      body: JSON.stringify({ source, evidence_root: evidenceRoot, case_id: caseId, script_name: scriptName }),
     });
-    if (!response.ok) throw new Error(`Runtime request failed (${response.status})`);
+    if (!response.ok) {
+      let errDetails = `Runtime request failed (${response.status})`;
+      try {
+        const data = await response.json();
+        if (data.diagnostics?.length) errDetails = data.diagnostics.join("; ");
+      } catch {}
+      throw new Error(errDetails);
+    }
     return response.json() as Promise<RuntimeExecutionResponse>;
   }
 
@@ -78,6 +98,13 @@ export class LocalRuntimeClient {
     });
     if (!response.ok) throw new Error(`Evidence import failed (${response.status})`);
     return response.json() as Promise<{ evidence: CaseSnapshot["evidence"][number]; snapshot: CaseSnapshot }>;
+  }
+
+  async getRun(caseId: string, runId: string): Promise<RuntimeExecutionResponse> {
+    const response = await fetch(`${this.baseUrl}/api/cases/${encodeURIComponent(caseId)}/runs/${encodeURIComponent(runId)}`);
+    if (!response.ok) throw new Error(`Run fetch failed (${response.status})`);
+    const data = await response.json() as { case_id: string; run: RuntimeExecutionResponse };
+    return data.run;
   }
 
   async getTree(caseId: string): Promise<Array<{ name: string; path: string; kind: "file" | "directory"; children?: any[] }>> {

@@ -14,6 +14,7 @@ class IROperation:
     destination: str | None
     expression: str
     dependencies: tuple[str, ...]
+    line_number: int
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ def lower_to_ir(procedure: Procedure) -> InvestigationIR:
                 destination=operation.destination,
                 expression=operation.expression,
                 dependencies=dependencies,
+                line_number=operation.line,
             )
         )
     return InvestigationIR("0.1", tuple(operations), tuple(diagnostics))
