@@ -1,13 +1,67 @@
+import { useState } from "react";
+
 export function Help() {
+  const [zoomLevel, setZoomLevel] = useState(100);
+
   return (
-    <div className="docs-view" style={{ maxWidth: "900px", margin: "0 auto", padding: "32px 24px" }}>
-      <header className="docs-header" style={{ marginBottom: "28px" }}>
-        <small style={{ color: "#38bdf8", fontWeight: 700, letterSpacing: "1px" }}>EVIDRA FORENSIC WORKSTATION</small>
-        <h1 style={{ fontSize: "24px", color: "#f8fafc", margin: "8px 0" }}>User Guide & Quick Reference</h1>
-        <p style={{ color: "#94a3b8", fontSize: "13px" }}>
-          Comprehensive manual for navigating Evidra, managing case workspaces, composing JOCKY procedures, and analyzing digital evidence.
-        </p>
-      </header>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", width: "100%", overflow: "hidden", background: "#090d14" }}>
+      {/* Sticky Top Zoom Controls */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "8px 24px",
+          background: "#0b1118",
+          borderBottom: "1px solid #1e293b",
+          flexShrink: 0,
+          zIndex: 10,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <span style={{ fontSize: "11px", color: "#38bdf8", fontWeight: 700, letterSpacing: "0.5px" }}>
+            EVIDRA USER GUIDE & FORENSIC CHEATSHEET
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <span style={{ fontSize: "10.5px", color: "#64748b", fontWeight: 600 }}>ZOOM:</span>
+          <button
+            onClick={() => setZoomLevel((prev) => Math.max(prev - 10, 70))}
+            style={{ padding: "2px 8px", background: "#0d1520", border: "1px solid #1e293b", color: "#cbd5e1", borderRadius: "4px", cursor: "pointer", fontSize: "11px", fontWeight: "bold" }}
+            title="Zoom Out"
+          >
+            −
+          </button>
+          <span style={{ fontSize: "11px", color: "#38bdf8", minWidth: "40px", textAlign: "center", fontFamily: "monospace", fontWeight: 600 }}>
+            {zoomLevel}%
+          </span>
+          <button
+            onClick={() => setZoomLevel((prev) => Math.min(prev + 10, 160))}
+            style={{ padding: "2px 8px", background: "#0d1520", border: "1px solid #1e293b", color: "#cbd5e1", borderRadius: "4px", cursor: "pointer", fontSize: "11px", fontWeight: "bold" }}
+            title="Zoom In"
+          >
+            +
+          </button>
+          <button
+            onClick={() => setZoomLevel(100)}
+            style={{ padding: "2px 8px", background: "#0d1520", border: "1px solid #1e293b", color: "#94a3b8", borderRadius: "4px", cursor: "pointer", fontSize: "10.5px" }}
+            title="Reset Zoom to 100%"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+
+      {/* Scalable Content Area */}
+      <div style={{ flex: 1, overflow: "auto" }}>
+        <div className="docs-view" style={{ maxWidth: "900px", margin: "0 auto", padding: "32px 24px", zoom: `${zoomLevel}%` }}>
+          <header className="docs-header" style={{ marginBottom: "28px" }}>
+            <small style={{ color: "#38bdf8", fontWeight: 700, letterSpacing: "1px" }}>EVIDRA FORENSIC WORKSTATION</small>
+            <h1 style={{ fontSize: "24px", color: "#f8fafc", margin: "8px 0" }}>User Guide & Quick Reference</h1>
+            <p style={{ color: "#94a3b8", fontSize: "13px" }}>
+              Comprehensive manual for navigating Evidra, managing case workspaces, composing JOCKY procedures, and analyzing digital evidence.
+            </p>
+          </header>
 
       {/* 1. Core Modules Overview */}
       <section className="docs-section" style={{ marginBottom: "32px" }}>
@@ -189,5 +243,7 @@ export function Help() {
         </div>
       </section>
     </div>
+  </div>
+</div>
   );
 }

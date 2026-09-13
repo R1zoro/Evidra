@@ -185,6 +185,9 @@ JOCKY organizes forensic procedures into four deterministic stages aligned with 
 | `prefetch.extract` | `[examine]` | `ArtifactCollection` | `PrefetchCollection` | Windows binary SCCA prefetch header parsing across NT versions (XP to 11), MAM decompression, and FILETIME execution history (Eric Zimmerman PECmd). |
 | `pcap.analyze` | `[examine]` | `ArtifactCollection` | `NetworkCollection` | Extracts Libpcap flows, DNS queries, and flags suspicious C2 beacon ports (Wireshark / Zeek). |
 | `registry.parse` | `[examine]` | `ArtifactCollection` | `RegistryCollection` | Parses registry hives/.reg exports for ASEP Auto-Start persistence, UserAssist execution, and USB devices (RECmd / RegRipper). |
+| `memory.analyze` | `[examine]` | `ArtifactCollection` | `MemoryCollection` | Scans volatile RAM dumps for active processes, unlinked DKOM stealth processes, and RWX shellcode stagers (Volatility 3). |
+| `evtx.parse` | `[examine]` | `ArtifactCollection` | `EventCollection` | Parses Windows Event Logs for logon (4624), process create (4688), service install (7045), and log clearing (1102) (Eric Zimmerman EvtxECmd). |
+| `hash.verify` | `[prepare]` / `[examine]` | `EvidenceReference` / `ArtifactCollection` | `VerificationReport` | Audits cryptographic hashes against chain-of-custody baselines to certify evidence integrity (NIST SP 800-86). |
 | `yara.scan` | `[examine]` | `ArtifactCollection` | `YaraResults` | Scans artifacts with YARA rulesets for threat signatures (VirusTotal YARA). |
 | `events.extract` | `[analysis]` | `ArtifactCollection` | `EventCollection` | Parses timestamps and structured system/log events (Plaso methodology). |
 | `events.merge` | `[analysis]` | Multiple Collections | `MergedDataset` | Combines multiple upstream collections into one dataset (Plaso methodology). |
@@ -194,6 +197,9 @@ JOCKY organizes forensic procedures into four deterministic stages aligned with 
 
 ### 5.2 Forensic Tool Lineage & Industry Standards Attribution
 Evidra capabilities implement and formalize proven methodologies from premier forensic tools:
+- **Volatility 3 Specification** (`memory.analyze` / `memory.processes`): Scans raw volatile RAM dumps (`.raw`, `.dmp`, `.vmem`), carves EPROCESS structures, identifies DKOM unlinked processes (ActiveProcessLinks evasion), detects RWX code injections & shellcode stagers (Cobalt Strike / Metasploit), and flags anomalous parent-child execution lineages.
+- **Eric Zimmerman EvtxECmd** (`evtx.parse`): Windows Event Log parser extracting critical security events: Process Creation (4688), Successful/Failed Logons (4624/4625), Service Installation (7045), and Anti-Forensic Audit Log Cleared (1102).
+- **NIST SP 800-86 Specification** (`hash.verify`): Automated cryptographic integrity audit comparing acquired artifact hashes against chain-of-custody baselines to certify evidence integrity.
 - **VirusTotal YARA** (`yara.scan`): Signature matching engine for threat indicators, custom `.yar` rules, and built-in incident response triage rulesets (Mimikatz, PowerShell obfuscation, WebShells, Ransomware notes).
 - **Wireshark / Zeek Network Analysis Specification** (`pcap.analyze`): Binary Libpcap parser supporting little-endian and big-endian PCAP streams, Ethernet, IPv4, TCP/UDP headers, conversation flows, DNS request extraction, and automated detection/flagging of C2 beacon ports (4444, 1337, 8888, 7070, 50050, 9999).
 - **Eric Zimmerman RECmd / Harlan Carvey RegRipper** (`registry.parse`): Windows registry hive and `.reg` export parser extracting Auto-Start Extensibility Points (ASEPs: Run, RunOnce), UserAssist execution history with ROT13 deciphering, and USBSTOR connected storage hardware tracking.

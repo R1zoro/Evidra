@@ -697,6 +697,17 @@ function Workspace({ onSwitchCase }: { onSwitchCase?: () => void }) {
               activeDocPath={activeDocPath}
               sourceCode={activeDoc?.content ?? blankSource}
               response={response}
+              tree={tree}
+              openDocs={openDocs}
+              onLoadScriptContent={async (path) => {
+                const existing = openDocs.find((d) => d.path === path || d.name === path);
+                if (existing) return existing.content;
+                try {
+                  return await caseFs.readFile(path);
+                } catch {
+                  return undefined;
+                }
+              }}
               onSyncToEditor={(newSource) => {
                 updateActiveContent(newSource);
                 setNotice("Building blocks synchronized with editor.");

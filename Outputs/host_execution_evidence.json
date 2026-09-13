@@ -1,0 +1,32 @@
+[
+  {
+    "id": "PF-001",
+    "artifact_id": "ART-DC225A",
+    "executable_name": "CALC_PAYLOAD.EXE",
+    "prefetch_file": "CALC_PAYLOAD.EXE-3F82C101.PF",
+    "prefetch_hash": "3F82C101",
+    "version": "Triage / Static Analysis",
+    "run_count": 1,
+    "last_execution_utc": "2026-09-13T21:19:27.447965+00:00",
+    "previous_executions_utc": [],
+    "file_path": "Evidence/Host_Endpoint_WS01/calc_payload.exe",
+    "size_bytes": 508,
+    "sha256": "0e0b4892f24012b0e04981b5a08b93800aeddf58f153bf9027ce067a2defd394",
+    "tool_attribution": "Eric Zimmerman PECmd Specification"
+  },
+  {
+    "id": "PF-002",
+    "artifact_id": "ART-915915",
+    "executable_name": "POWERSHELL.EXE-A1B2C3D4",
+    "prefetch_file": "POWERSHELL.EXE-A1B2C3D4.pf",
+    "prefetch_hash": "3F82C101",
+    "version": "Triage / Static Analysis",
+    "run_count": 1,
+    "last_execution_utc": "2026-09-13T21:19:27.431345+00:00",
+    "previous_executions_utc": [],
+    "file_path": "Evidence/Host_Endpoint_WS01/POWERSHELL.EXE-A1B2C3D4.pf",
+    "size_bytes": 416,
+    "sha256": "72e115cd2f726cd4c392e59712b7e7009ce3c5d2e13b3a8c5fbfcf9cc083e1ee",
+    "tool_attribution": "Eric Zimmerman PECmd Specification"
+  }
+]

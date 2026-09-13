@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Icon } from "./Icon";
 import type { RuntimeExecutionResponse } from "../api/runtimeClient";
+import type { FsNode, OpenDoc } from "../types";
 
 export type BlockCategory =
   | "input"
@@ -321,11 +322,11 @@ export function parseDslToBlocks(dsl: string): { blocks: CanvasBlock[]; connecti
       cap = "copy";
       cat = "preparation";
       stage = "prepare";
-      const copyMatch = rhs.match(/copy\s+([^\s]+)\s+as\s+([^\s"]+)(?:\s+"([^"]+)")?/);
+      const copyMatch = rhs.match(/copy\s+([^\s]+)\s+as\s+(?:"([^"]+)"|([^\s"]+))(?:\s+(?:to|>)?\s*"([^"]+)")?/);
       if (copyMatch) {
         inputVars = [copyMatch[1]];
-        parameters.targetName = copyMatch[2];
-        if (copyMatch[3]) parameters.targetPath = copyMatch[3];
+        parameters.targetName = copyMatch[2] || copyMatch[3];
+        if (copyMatch[4]) parameters.targetPath = copyMatch[4];
       }
     } else if (rhs.startsWith("hash ") || trimmed.startsWith("hash ")) {
       cap = "hash";
@@ -419,6 +420,11 @@ export function parseDslToBlocks(dsl: string): { blocks: CanvasBlock[]; connecti
       const inner = rhs.match(/correlate\s*\(([^)]+)\)/);
       if (inner) {
         inputVars = inner[1].split(",").map((s) => s.trim()).filter(Boolean);
+      } else {
+        const afterCorrelate = rhs.replace(/^correlate\s+/, "").trim();
+        if (afterCorrelate) {
+          inputVars = afterCorrelate.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+        }
       }
     } else if (trimmed.startsWith("export ") || rhs.startsWith("export ")) {
       cap = "export";
@@ -484,19 +490,27 @@ export function parseDslToBlocks(dsl: string): { blocks: CanvasBlock[]; connecti
   return { blocks: parsedBlocks, connections };
 }
 
+export interface BlocksProps {
+  activeDocPath: string | null;
+  sourceCode: string;
+  response: RuntimeExecutionResponse | null;
+  tree?: FsNode[];
+  openDocs?: OpenDoc[];
+  onLoadScriptContent?: (path: string) => Promise<string | undefined>;
+  onSyncToEditor?: (updatedCode: string) => void;
+  onRunWorkflow?: (code: string) => void;
+}
+
 export function Blocks({
   activeDocPath,
   sourceCode,
   response: _response,
+  tree = [],
+  openDocs = [],
+  onLoadScriptContent,
   onSyncToEditor,
   onRunWorkflow,
-}: {
-  activeDocPath: string | null;
-  sourceCode: string;
-  response: RuntimeExecutionResponse | null;
-  onSyncToEditor?: (updatedCode: string) => void;
-  onRunWorkflow?: (code: string) => void;
-}) {
+}: BlocksProps) {
   const [zoomLevel, setZoomLevel] = useState(100);
   const [globalCompact, setGlobalCompact] = useState(false);
   const [showDslPanel, setShowDslPanel] = useState(true);
@@ -504,6 +518,54 @@ export function Blocks({
   const [activeTab, setActiveTab] = useState<"parameters" | "general">("parameters");
   const [userHasEdited, setUserHasEdited] = useState(false);
   const [notice, setNotice] = useState<string>("");
+
+  // Discover all .jocky scripts in workspace
+  const allAvailableScripts = useMemo(() => {
+    const list: { name: string; path: string }[] = [];
+    openDocs.forEach((d) => {
+      if (d.name.endsWith(".jocky") || d.type === "jocky") {
+        list.push({ name: d.name, path: d.path });
+      }
+    });
+    const walk = (nodes: FsNode[]) => {
+      nodes.forEach((n) => {
+        if (n.kind === "file" && n.name.endsWith(".jocky")) {
+          if (!list.some((existing) => existing.path === n.path || existing.name === n.name)) {
+            list.push({ name: n.name, path: n.path });
+          }
+        } else if (n.kind === "directory" && n.children) {
+          walk(n.children);
+        }
+      });
+    };
+    walk(tree);
+    return list;
+  }, [tree, openDocs]);
+
+  const loadScriptIntoCanvas = async (path: string) => {
+    try {
+      let content: string | undefined;
+      if (onLoadScriptContent) {
+        content = await onLoadScriptContent(path);
+      } else {
+        const doc = openDocs.find((d) => d.path === path || d.name === path);
+        content = doc?.content;
+      }
+      if (content !== undefined && content !== null) {
+        const parsed = parseDslToBlocks(content);
+        setBlocks(parsed.blocks);
+        setConnections(parsed.connections);
+        setUserHasEdited(true);
+        setSelectedBlockId(null);
+        const scriptBase = path.split(/[\\/]/).pop() || path;
+        setNotice(`Loaded "${scriptBase}" into Blocks (${parsed.blocks.length} blocks, ${parsed.connections.length} wires).`);
+        setTimeout(() => setNotice(""), 3000);
+      }
+    } catch (err) {
+      setNotice(`Failed to load script: ${err instanceof Error ? err.message : "read error"}`);
+      setTimeout(() => setNotice(""), 3000);
+    }
+  };
 
   // Multi-canvas state
   const [canvasNames, setCanvasNames] = useState<string[]>(["Primary Workflow"]);
@@ -957,6 +1019,45 @@ export function Blocks({
             </button>
           </div>
 
+          {/* Script Loader Dropdown */}
+          <div className="canvas-switcher-wrap" style={{ borderLeft: "1px solid #1e293b", paddingLeft: "8px" }}>
+            <span className="toolbar-section-label" title="Load any .jocky script from workspace into canvas">LOAD:</span>
+            <select
+              className="canvas-select-dropdown"
+              style={{ maxWidth: "150px" }}
+              value=""
+              onChange={(e) => {
+                if (e.target.value) {
+                  loadScriptIntoCanvas(e.target.value);
+                }
+              }}
+            >
+              <option value="" disabled>
+                {allAvailableScripts.length > 0 ? "Select script..." : "No scripts found"}
+              </option>
+              {allAvailableScripts.map((s) => (
+                <option key={s.path} value={s.path}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <button
+              className="btn-new-canvas"
+              onClick={() => {
+                setBlocks([]);
+                setConnections([]);
+                setSelectedBlockId(null);
+                setUserHasEdited(true);
+                setNotice("Canvas cleared to blank.");
+                setTimeout(() => setNotice(""), 2500);
+              }}
+              title="Blank canvas"
+              style={{ width: "auto", padding: "0 6px", fontSize: "10px", fontWeight: "bold" }}
+            >
+              BLANK
+            </button>
+          </div>
+
           <div className="category-pills-row">
             <button
               className="category-pill"
@@ -1141,6 +1242,10 @@ export function Blocks({
                 const midY = y1 + Math.max(30, (y2 - y1) * 0.5);
                 const pathD = `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
 
+                // Mathematically exact midpoint along the cubic Bézier curve at t = 0.5
+                const curveMidX = midX;
+                const curveMidY = 0.125 * (y1 + y2) + 0.75 * midY;
+
                 return (
                   <g key={conn.id} className="wire-group">
                     {/* Invisible wider hit area for easy clicking */}
@@ -1171,10 +1276,10 @@ export function Blocks({
                       strokeWidth="2.5"
                       className="bezier-wire-smooth"
                     />
-                    {/* Delete button at midpoint */}
+                    {/* Delete button pinned exactly to curve center without floating */}
                     <g
                       className="wire-delete-btn"
-                      transform={`translate(${midX}, ${midY})`}
+                      transform={`translate(${curveMidX}, ${curveMidY})`}
                       onClick={(e) => {
                         e.stopPropagation();
                         deleteConnection(conn.id);

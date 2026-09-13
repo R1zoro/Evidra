@@ -3453,9 +3453,8 @@ body.resizing-active * {
 }
 
 .mapping-grid {
-  display: grid;
-  grid-template-columns: 290px 240px 240px;
-  gap: 40px;
+  display: flex !important;
+  gap: 0 !important;
   position: relative;
   min-width: 850px;
   flex: 1;
@@ -3976,11 +3975,26 @@ body.resizing-active * {
 .wire-delete-btn {
   pointer-events: all;
   cursor: pointer;
-  transition: transform 0.15s ease;
 }
 
-.wire-delete-btn:hover {
-  transform: scale(1.2);
+.wire-delete-btn circle {
+  transition: r 0.15s ease, stroke-width 0.15s ease, fill 0.15s ease, stroke 0.15s ease;
+}
+
+.wire-delete-btn text {
+  transition: fill 0.15s ease, font-size 0.15s ease;
+  user-select: none;
+}
+
+.wire-delete-btn:hover circle {
+  r: 12px;
+  stroke-width: 2px;
+  fill: #1e293b;
+  stroke: #ef4444;
+}
+
+.wire-delete-btn:hover text {
+  fill: #ef4444;
 }
 
 /* Dark Theme for Results Explorer Operations Bar */

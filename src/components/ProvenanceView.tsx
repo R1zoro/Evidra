@@ -227,11 +227,272 @@ export function ProvenanceView({
 
   const folderNames = Array.from(foldersMap.keys());
 
+  // Distinct higher-level materialized sources inside the main Evidence folder (e.g. downloads, processes, zip files)
+  const evidenceRoots = useMemo(() => {
+    // 1. First, search tree for the main Evidence directory
+    const evidenceDir = tree.find(
+      (n) => n.kind === "directory" && (n.name.toLowerCase() === "evidence" || n.name.toLowerCase() === "sources")
+    ) || tree.find((n) => n.name.toLowerCase().includes("evidence") && n.kind === "directory");
+
+    if (evidenceDir && evidenceDir.children && evidenceDir.children.length > 0) {
+      // Each direct child of Evidence is a materialized source at the higher level!
+      return evidenceDir.children.map((child, idx) => {
+        const files: DynamicEvidenceFile[] = [];
+        const collect = (node: FsNode) => {
+          if (node.kind === "file") {
+            files.push({
+              id: `evid-${node.path}`,
+              name: node.name,
+              path: node.path.replace(/\\/g, "/"),
+              folder: child.name,
+              isContributory: true,
+            });
+          } else if (node.children) {
+            node.children.forEach(collect);
+          }
+        };
+        collect(child);
+
+        return {
+          id: `root-${child.name}-${idx}`,
+          name: child.name,
+          path: child.path.replace(/\\/g, "/"),
+          files,
+        };
+      });
+    }
+
+    // 2. Fallback: inspect tree paths starting with Evidence/
+    const sourceMap = new Map<string, DynamicEvidenceFile[]>();
+    const walkTree = (nodes: FsNode[]) => {
+      nodes.forEach((n) => {
+        const clean = n.path.replace(/\\/g, "/");
+        if (clean.toLowerCase().startsWith("evidence/")) {
+          const parts = clean.split("/");
+          if (parts.length >= 2) {
+            const sourceName = parts[1];
+            if (n.kind === "file") {
+              const list = sourceMap.get(sourceName) || [];
+              list.push({
+                id: `evid-${clean}`,
+                name: n.name,
+                path: clean,
+                folder: sourceName,
+                isContributory: true,
+              });
+              sourceMap.set(sourceName, list);
+            }
+          }
+        } else if (n.kind === "directory" && n.children) {
+          walkTree(n.children);
+        }
+      });
+    };
+    walkTree(tree);
+
+    if (sourceMap.size > 0) {
+      return Array.from(sourceMap.entries()).map(([name, files], idx) => ({
+        id: `root-${name}-${idx}`,
+        name,
+        path: `Evidence/${name}`,
+        files,
+      }));
+    }
+
+    // 3. Fallback to dynamicFiles grouped by the first path segment after Evidence
+    if (dynamicFiles.length > 0) {
+      const fallbackMap = new Map<string, DynamicEvidenceFile[]>();
+      dynamicFiles.forEach((f) => {
+        const clean = f.path.replace(/\\/g, "/");
+        const parts = clean.split("/");
+        const sourceName = parts[0].toLowerCase() === "evidence" && parts.length > 1 ? parts[1] : parts[0] || caseName;
+        const list = fallbackMap.get(sourceName) || [];
+        list.push(f);
+        fallbackMap.set(sourceName, list);
+      });
+
+      return Array.from(fallbackMap.entries()).map(([name, files], idx) => ({
+        id: `root-${name}-${idx}`,
+        name,
+        path: `Evidence/${name}`,
+        files,
+      }));
+    }
+
+    // 4. Default single node
+    return [
+      {
+        id: "root-default",
+        name: caseName.replace(/[^A-Za-z0-9_]/g, "_"),
+        path: "Evidence",
+        files: [],
+      },
+    ];
+  }, [tree, dynamicFiles, caseName]);
+
+  // Calculate dynamic vertical positions for each card and its right port
+  const sourceCardLayout = useMemo(() => {
+    let currentY = 56;
+    return evidenceRoots.map((root) => {
+      const isExpanded = expandedFolders[root.name] ?? false;
+      const fileCount = root.files.length;
+      const headerHeight = 52;
+      const filesHeight = isExpanded && fileCount > 0 ? Math.min(fileCount * 22 + 10, 160) : 0;
+      const totalHeight = headerHeight + filesHeight;
+      const portY = currentY + headerHeight / 2;
+      const pos = { top: currentY, portY, totalHeight };
+      currentY += totalHeight + 14;
+      return pos;
+    });
+  }, [evidenceRoots, expandedFolders]);
+
+  const getEvidenceRootY = (rootIdx: number) => {
+    if (sourceCardLayout[rootIdx]) {
+      return sourceCardLayout[rootIdx].portY;
+    }
+    return 60 + rootIdx * 72;
+  };
+
+  const isRootConnectedToScript = (rootName: string, scriptName: string) => {
+    if (evidenceRoots.length <= 1) return true;
+    const rLower = rootName.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const sLower = scriptName.toLowerCase().replace(/[^a-z0-9]/g, "");
+
+    // 1. Check runHistory steps for explicit reference to rootName
+    const run = runHistory.find((r) => r.scriptName === scriptName);
+    if (run && run.response?.steps) {
+      const touchedInSteps = run.response.steps.some((st: any) => {
+        const dest = (st.destination || "").toLowerCase();
+        const expr = (st.expression || "").toLowerCase();
+        const inps: string[] = Array.isArray(st.inputs) ? st.inputs.map((i: any) => String(i).toLowerCase()) : [];
+        return (
+          dest.includes(rLower) ||
+          expr.includes(rLower) ||
+          inps.some((i) => i.includes(rLower))
+        );
+      });
+      if (touchedInSteps) return true;
+    }
+
+    // 2. Check if any files in this root were processed in this script's results
+    const rootItem = evidenceRoots.find((r) => r.name === rootName);
+    if (rootItem && rootItem.files.some((f) => f.scriptName === scriptName)) {
+      return true;
+    }
+
+    // 3. Name containment
+    if (sLower.includes(rLower) || rLower.includes(sLower.replace(/\.jocky$/, ""))) {
+      return true;
+    }
+
+    // 4. Semantic roles
+    if (sLower.includes("host") || sLower.includes("endpoint") || sLower.includes("triage")) {
+      if (rLower.includes("host") || rLower.includes("endpoint") || rLower.includes("workstation") || rLower.includes("company")) {
+        return true;
+      }
+    }
+    if (sLower.includes("perimeter") || sLower.includes("network") || sLower.includes("c2") || sLower.includes("memory") || sLower.includes("hunt")) {
+      if (
+        rLower.includes("net") ||
+        rLower.includes("perimeter") ||
+        rLower.includes("ram") ||
+        rLower.includes("server") ||
+        rLower.includes("dc") ||
+        rLower.includes("hunt") ||
+        rLower.includes("prior")
+      ) {
+        return true;
+      }
+    }
+    // Cross-source enterprise correlation links to all roots
+    if (sLower.includes("correlat") || sLower.includes("enterprise") || sLower.includes("matrix") || sLower.includes("apex") || sLower.includes("full")) {
+      return true;
+    }
+
+    return false;
+  };
+
   // Automatically select first export if none selected and exports exist
   const selectedExport = useMemo(() => {
     if (!dynamicExports.length) return null;
     return dynamicExports.find((e) => e.id === selectedExportId) || dynamicExports[0];
   }, [dynamicExports, selectedExportId]);
+
+  // Detect cross-script dependencies: when a script imports an export deliverable from an upstream script
+  const crossScriptFeeds = useMemo(() => {
+    const feeds: {
+      fromExportId: string;
+      fromExportName: string;
+      fromExportIdx: number;
+      fromScriptName: string;
+      toScriptName: string;
+      toScriptIdx: number;
+    }[] = [];
+
+    uniqueScripts.forEach((toScript, toIdx) => {
+      const run = runHistory.find((r) => r.scriptName === toScript.scriptName);
+      if (!run || !run.response?.steps) return;
+
+      const scriptSteps = run.response.steps;
+      dynamicExports.forEach((exp, expIdx) => {
+        if (exp.scriptName === toScript.scriptName) return; // ignore self
+        const expNameClean = exp.name.toLowerCase();
+        const baseName = expNameClean.replace(/\.[^/.]+$/, "");
+
+        const isImported = scriptSteps.some((st: any) => {
+          const dest = (st.destination || "").toLowerCase();
+          const expr = (st.expression || "").toLowerCase();
+          const inps = Array.isArray(st.inputs) ? st.inputs.map((i: any) => String(i).toLowerCase()) : [];
+          return (
+            dest.includes(expNameClean) ||
+            dest.includes(baseName) ||
+            expr.includes(expNameClean) ||
+            expr.includes(baseName) ||
+            inps.some((i: string) => i.includes(expNameClean) || i.includes(baseName))
+          );
+        });
+
+        if (isImported) {
+          feeds.push({
+            fromExportId: exp.id,
+            fromExportName: exp.name,
+            fromExportIdx: expIdx,
+            fromScriptName: exp.scriptName,
+            toScriptName: toScript.scriptName,
+            toScriptIdx: toIdx,
+          });
+        }
+      });
+    });
+
+    return feeds;
+  }, [uniqueScripts, runHistory, dynamicExports]);
+
+  // Selective file highlighting: only files contributing to the active export or script are highlighted
+  const isFileContributory = (file: DynamicEvidenceFile, rootName: string) => {
+    if (!selectedExport && !selectedScriptId) return true;
+
+    const targetScript = selectedExport ? selectedExport.scriptName : selectedScriptId;
+    if (!targetScript) return true;
+
+    if (!isRootConnectedToScript(rootName, targetScript)) return false;
+    if (!selectedExport) return true;
+
+    const expName = selectedExport.name.toLowerCase();
+    const fName = file.name.toLowerCase();
+    const fExt = fName.split(".").pop() || "";
+
+    if (expName.includes("execution") || expName.includes("prefetch")) {
+      return fExt === "pf" || fName.includes("payload") || fName.includes("powershell");
+    }
+    if (expName.includes("beacon") || expName.includes("network") || expName.includes("c2")) {
+      return fExt === "pcap" || fExt === "log";
+    }
+    if (expName.includes("intel") || expName.includes("perimeter")) {
+      return fExt === "pcap" || fExt === "raw" || fExt === "yar" || fExt === "log" || fName.includes("manifest");
+    }
+    return true;
+  };
 
   // If runHistory is completely empty, show clean empty state
   if (runHistory.length === 0) {
@@ -311,21 +572,20 @@ export function ProvenanceView({
   };
 
   // Dynamic layout coordinates for SVG wires and columns
-  // Canvas padding is 24px
-  const col1Left = 24;
-  const col1Right = col1Left + col1Width;
+  // Column 1 (Evidence Hierarchy) starts at X = 0 within mapping-grid
+  const col1Right = col1Width;
   const evidPortX = col1Right;
-  const evidPortY = 68;
+  const evidPortY = 32; // Center of Case Evidence header card
 
-  // Column 2 (Active Procedures)
-  const col2Left = col1Right + gap1;
+  // Column 2 (Active Procedures) starts at col1Width + gap1
+  const col2Left = col1Width + gap1;
   const col2Right = col2Left + col2Width;
-  const getScriptY = (sIdx: number) => 56 + sIdx * 72;
+  const getScriptY = (sIdx: number) => 60 + sIdx * 72; // Header 16px + Gap 16px + Card/2 (28px) = 60px
 
-  // Column 3 (Export Deliverables)
+  // Column 3 (Export Deliverables) starts at col2Right + gap2
   const col3Left = col2Right + gap2;
   const col3Right = col3Left + col3Width;
-  const getExportY = (eIdx: number) => 56 + eIdx * 72;
+  const getExportY = (eIdx: number) => 60 + eIdx * 72; // Header 16px + Gap 16px + Card/2 (28px) = 60px
 
   const minCanvasWidth = col3Right + 60;
 
@@ -442,77 +702,135 @@ export function ProvenanceView({
 
           <div className="mapping-grid" style={{ display: "flex", position: "relative", minHeight: "520px", minWidth: `${minCanvasWidth}px` }}>
             {/* Column 1: Evidence Hierarchy */}
-            <div className="mapping-column evidence-column" style={{ width: `${col1Width}px`, flexShrink: 0, zIndex: 2 }}>
-              <div className="evidence-root-card" style={{ background: "#0d1520", border: "1px solid #1e293b", borderRadius: "8px", padding: "12px", marginBottom: "12px", position: "relative" }}>
-                <div className="evidence-card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
-                  <div className="card-icon-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                    <div className="evidence-folder-icon" style={{ color: "#38bdf8" }}>
-                      <Icon name="folder" />
-                    </div>
-                    <div>
-                      <strong style={{ fontSize: "12px", color: "#f1f5f9" }}>{caseName.replace(/[^A-Za-z0-9_]/g, "_")}</strong>
-                      <span className="card-sub" style={{ display: "block", fontSize: "10px", color: "#64748b" }}>Case Evidence</span>
-                    </div>
-                  </div>
-                  <div className="header-badges" style={{ display: "flex", gap: "4px" }}>
-                    <span className="count-pill cyan" style={{ fontSize: "9px", background: "rgba(56,189,248,0.15)", color: "#38bdf8", padding: "2px 6px", borderRadius: "4px" }}>
-                      {dynamicFiles.length} files
-                    </span>
-                  </div>
-                </div>
-
-                {/* Dynamic Evidence Folders & Files */}
-                {showFileNodes && (
-                  <div className="evidence-tree-content">
-                    {folderNames.map((folderName) => {
-                      const files = foldersMap.get(folderName) || [];
-                      const isExpanded = expandedFolders[folderName] ?? true;
-
-                      return (
-                        <div key={folderName} className="tree-folder-group" style={{ marginBottom: "6px" }}>
-                          <div
-                            className="folder-row"
-                            onClick={() => toggleFolder(folderName)}
-                            style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#cbd5e1", cursor: "pointer", padding: "4px 6px", borderRadius: "4px" }}
-                          >
-                            <span className="twisty">{isExpanded ? "⌄" : "›"}</span>
-                            <Icon name="folder" />
-                            <span className="folder-name" style={{ fontWeight: 500 }}>{folderName} ({files.length})</span>
-                          </div>
-
-                          {isExpanded && (
-                            <div className="files-list" style={{ paddingLeft: "16px", marginTop: "4px" }}>
-                              {files.map((f) => (
-                                <div
-                                  key={f.id}
-                                  className={`file-item-row ${f.isContributory ? "contributory-active" : ""}`}
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: "6px",
-                                    fontSize: "10px",
-                                    color: "#94a3b8",
-                                    padding: "3px 6px",
-                                    borderRadius: "3px",
-                                  }}
-                                  title={f.path}
-                                >
-                                  <span className="file-check-icon" style={{ color: "#38bdf8" }}>
-                                    <Icon name="file" />
-                                  </span>
-                                  <span className="file-name" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                    {f.name}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
+            <div className="mapping-column evidence-column" style={{ width: `${col1Width}px`, flexShrink: 0, zIndex: 2, display: "flex", flexDirection: "column", gap: "14px" }}>
+              <div style={{ fontSize: "10px", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.05em", color: "#38bdf8", height: "16px", lineHeight: "16px" }}>
+                Evidence Sources ({evidenceRoots.length})
               </div>
+
+              {evidenceRoots.map((root, rIdx) => {
+                const isExpanded = expandedFolders[root.name] ?? false;
+                const isRootActive = selectedScriptId
+                  ? isRootConnectedToScript(root.name, selectedScriptId)
+                  : selectedExport
+                  ? isRootConnectedToScript(root.name, selectedExport.scriptName)
+                  : false;
+
+                return (
+                  <div
+                    key={root.id}
+                    className="evidence-root-card"
+                    style={{
+                      background: isRootActive ? "rgba(56, 189, 248, 0.08)" : "#0d1520",
+                      border: `1px solid ${isRootActive ? "#38bdf8" : "#1e293b"}`,
+                      borderRadius: "8px",
+                      padding: "10px 12px",
+                      position: "relative",
+                      transition: "all 0.15s ease",
+                      boxShadow: isRootActive ? "0 0 14px rgba(56, 189, 248, 0.22)" : "none",
+                    }}
+                  >
+                    <div
+                      style={{
+                        position: "absolute",
+                        right: "-5px",
+                        top: "26px",
+                        transform: "translateY(-50%)",
+                        width: "10px",
+                        height: "10px",
+                        borderRadius: "50%",
+                        background: "#0d1520",
+                        border: `2px solid ${isRootActive ? "#38bdf8" : "#334155"}`,
+                        pointerEvents: "none",
+                        zIndex: 3,
+                      }}
+                    />
+                    <div
+                      className="evidence-card-header"
+                      onClick={() => toggleFolder(root.name)}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer", userSelect: "none" }}
+                      title={`Click to ${isExpanded ? "contract" : "expand"} ${root.name}`}
+                    >
+                      <div className="card-icon-title" style={{ display: "flex", alignItems: "center", gap: "8px", minWidth: 0, flex: 1 }}>
+                        <div className="evidence-folder-icon" style={{ color: "#38bdf8", flexShrink: 0 }}>
+                          <Icon name="folder" />
+                        </div>
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <strong style={{ fontSize: "11px", color: "#f1f5f9", display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {root.name}
+                          </strong>
+                          <span className="card-sub" style={{ display: "block", fontSize: "9px", color: "#64748b" }}>
+                            Materialized Import
+                          </span>
+                        </div>
+                      </div>
+                      <div className="header-badges" style={{ display: "flex", alignItems: "center", gap: "6px", flexShrink: 0 }}>
+                        <span className="count-pill cyan" style={{ fontSize: "9px", background: "rgba(56,189,248,0.15)", color: "#38bdf8", padding: "1px 5px", borderRadius: "3px" }}>
+                          {root.files.length} file{root.files.length !== 1 ? "s" : ""}
+                        </span>
+                        <span style={{ fontSize: "11px", color: "#94a3b8", fontWeight: "bold", width: "10px", textAlign: "center" }}>
+                          {isExpanded ? "▾" : "▸"}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Files list when expanded */}
+                    {isExpanded && (
+                      <div
+                        className="files-list"
+                        style={{
+                          paddingLeft: "6px",
+                          marginTop: "8px",
+                          borderTop: "1px solid #1e293b",
+                          paddingTop: "6px",
+                          maxHeight: "160px",
+                          overflowY: "auto",
+                        }}
+                      >
+                        {root.files.length === 0 ? (
+                          <div style={{ fontSize: "9.5px", color: "#64748b", fontStyle: "italic", padding: "4px 0" }}>
+                            Empty directory
+                          </div>
+                        ) : (
+                          root.files.map((f) => {
+                            const isContributory = isFileContributory(f, root.name);
+                            return (
+                              <div
+                                key={f.id}
+                                className={`file-item-row ${isContributory ? "contributory-active" : "file-dimmed"}`}
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: "6px",
+                                  fontSize: "9.5px",
+                                  color: isContributory ? "#38bdf8" : "#475569",
+                                  background: isContributory ? "rgba(56, 189, 248, 0.08)" : "transparent",
+                                  borderRadius: "4px",
+                                  padding: "2px 4px",
+                                  margin: "1px 0",
+                                  transition: "all 0.15s ease",
+                                }}
+                                title={f.path}
+                              >
+                                <span className="file-check-icon" style={{ color: isContributory ? "#38bdf8" : "#475569" }}>
+                                  <Icon name="file" />
+                                </span>
+                                <span className="file-name" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+                                  {f.name}
+                                </span>
+                                {isContributory && selectedExport && (
+                                  <span style={{ fontSize: "8px", color: "#10b981", fontWeight: 700, padding: "0 4px", background: "rgba(16, 185, 129, 0.15)", borderRadius: "3px" }}>
+                                    CONTRIBUTORY
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
 
             {/* Interactive Column 1 -> 2 Drag Divider Handle */}
@@ -523,8 +841,10 @@ export function ProvenanceView({
                 width: `${gap1}px`,
                 flexShrink: 0,
                 display: "flex",
+                flexDirection: "column",
                 alignItems: "center",
-                justifyContent: "center",
+                justifyContent: "flex-start",
+                paddingTop: "20px",
                 cursor: "col-resize",
                 position: "relative",
                 zIndex: 4,
@@ -533,17 +853,18 @@ export function ProvenanceView({
             >
               <div
                 style={{
-                  padding: "3px 8px",
-                  borderRadius: "10px",
-                  background: "rgba(15, 23, 42, 0.85)",
-                  border: "1px solid #334155",
-                  color: "#94a3b8",
-                  fontSize: "9px",
+                  padding: "4px 8px",
+                  borderRadius: "12px",
+                  background: "#0d1520",
+                  border: "1px solid #38bdf8",
+                  color: "#38bdf8",
+                  fontSize: "9.5px",
+                  fontWeight: 600,
                   display: "flex",
                   alignItems: "center",
                   gap: "4px",
                   userSelect: "none",
-                  pointerEvents: "none",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.5)",
                 }}
               >
                 <span>‹</span>
@@ -566,41 +887,47 @@ export function ProvenanceView({
                 zIndex: 1,
               }}
             >
-              {/* Lines from Evidence Root -> Procedures */}
-              {uniqueScripts.map((sc, sIdx) => {
-                const isSelectedScript = selectedScriptId === sc.scriptName || selectedExport?.scriptName === sc.scriptName;
-                const x1 = evidPortX;
-                const y1 = evidPortY;
-                const x2 = col2Left;
-                const y2 = getScriptY(sIdx);
-                const dx = x2 - x1;
-                const cx1 = x1 + dx * 0.5;
-                const cx2 = x2 - dx * 0.5;
+              {/* Lines from Evidence Roots -> Procedures */}
+              {evidenceRoots.map((root, rIdx) => {
+                const x1 = col1Right;
+                const y1 = getEvidenceRootY(rIdx);
 
-                return (
-                  <g key={`curve-evid-script-${sc.scriptName}`}>
-                    {/* Shadow / glow path if selected */}
-                    {isSelectedScript && (
+                return uniqueScripts.map((sc, sIdx) => {
+                  const isConnected = isRootConnectedToScript(root.name, sc.scriptName);
+                  if (!isConnected) return null;
+
+                  const isSelectedScript = selectedScriptId === sc.scriptName || selectedExport?.scriptName === sc.scriptName;
+                  const x2 = col2Left;
+                  const y2 = getScriptY(sIdx);
+                  const dx = x2 - x1;
+                  const cx1 = x1 + dx * 0.5;
+                  const cx2 = x2 - dx * 0.5;
+
+                  return (
+                    <g key={`curve-evid-${root.id}-${sc.scriptName}`}>
+                      {/* Shadow / glow path if selected */}
+                      {isSelectedScript && (
+                        <path
+                          d={`M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`}
+                          fill="none"
+                          stroke="#38bdf8"
+                          strokeWidth={6}
+                          strokeOpacity={0.25}
+                        />
+                      )}
                       <path
                         d={`M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`}
+                        stroke={isSelectedScript ? "#38bdf8" : "#334155"}
+                        strokeWidth={isSelectedScript ? 2.5 : 1.5}
+                        strokeOpacity={isSelectedScript ? 1 : 0.45}
                         fill="none"
-                        stroke="#38bdf8"
-                        strokeWidth={6}
-                        strokeOpacity={0.25}
                       />
-                    )}
-                    <path
-                      d={`M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`}
-                      stroke={isSelectedScript ? "#38bdf8" : "#334155"}
-                      strokeWidth={isSelectedScript ? 2.5 : 1.5}
-                      strokeOpacity={isSelectedScript ? 1 : 0.45}
-                      fill="none"
-                    />
-                    {/* Port indicator dots */}
-                    <circle cx={x1} cy={y1} r={3} fill="#38bdf8" />
-                    <circle cx={x2} cy={y2} r={3} fill="#818cf8" />
-                  </g>
-                );
+                      {/* Port indicator dots physically attached to card borders */}
+                      <circle cx={x1} cy={y1} r={4} fill="#0d1520" stroke="#38bdf8" strokeWidth={2} />
+                      <circle cx={x2} cy={y2} r={4} fill="#0d1520" stroke="#818cf8" strokeWidth={2} />
+                    </g>
+                  );
+                });
               })}
 
               {/* Lines from Procedures -> Export Deliverables */}
@@ -641,8 +968,36 @@ export function ProvenanceView({
                       strokeOpacity={strokeOpacity}
                       fill="none"
                     />
-                    <circle cx={x1} cy={y1} r={3} fill="#818cf8" />
-                    <circle cx={x2} cy={y2} r={3} fill="#10b981" />
+                    {/* Port indicator dots physically attached to card borders */}
+                    <circle cx={x1} cy={y1} r={4} fill="#0d1520" stroke="#818cf8" strokeWidth={2} />
+                    <circle cx={x2} cy={y2} r={4} fill="#0d1520" stroke="#10b981" strokeWidth={2} />
+                  </g>
+                );
+              })}
+
+              {/* Upstream Export -> Downstream Procedure Pipeline Feed Wires */}
+              {crossScriptFeeds.map((feed) => {
+                const x1 = col3Left;
+                const y1 = getExportY(feed.fromExportIdx);
+                const x2 = col2Right;
+                const y2 = getScriptY(feed.toScriptIdx);
+                const arcDx = Math.max(50, Math.abs(x1 - x2) * 0.45);
+                const cx1 = x1 - arcDx;
+                const cx2 = x2 + arcDx;
+
+                const isHighlighted = selectedScriptId === feed.toScriptName || selectedExport?.id === feed.fromExportId;
+
+                return (
+                  <g key={`feed-${feed.fromExportId}-${feed.toScriptName}`}>
+                    <path
+                      d={`M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`}
+                      stroke={isHighlighted ? "#f59e0b" : "rgba(245, 158, 11, 0.45)"}
+                      strokeWidth={isHighlighted ? 2.5 : 1.5}
+                      strokeDasharray="5,4"
+                      fill="none"
+                    />
+                    <circle cx={x1} cy={y1} r={4.5} fill="#0d1520" stroke="#f59e0b" strokeWidth={2} />
+                    <circle cx={x2} cy={y2} r={4.5} fill="#0d1520" stroke="#f59e0b" strokeWidth={2} />
                   </g>
                 );
               })}
@@ -656,6 +1011,7 @@ export function ProvenanceView({
 
               {uniqueScripts.map((sc) => {
                 const isSelected = selectedScriptId === sc.scriptName || selectedExport?.scriptName === sc.scriptName;
+                const hasInboundFeed = crossScriptFeeds.some((f) => f.toScriptName === sc.scriptName);
                 return (
                   <div
                     key={sc.scriptName}
@@ -674,11 +1030,44 @@ export function ProvenanceView({
                       alignItems: "center",
                       gap: "10px",
                       height: "56px",
+                      position: "relative",
                       boxSizing: "border-box",
                       transition: "all 0.15s ease",
                       boxShadow: isSelected ? "0 0 14px rgba(129, 140, 248, 0.25)" : "none",
                     }}
                   >
+                    {/* Left input port dot */}
+                    <div
+                      style={{
+                        position: "absolute",
+                        left: "-5px",
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        width: "10px",
+                        height: "10px",
+                        borderRadius: "50%",
+                        background: "#0d1520",
+                        border: "2px solid #818cf8",
+                        pointerEvents: "none",
+                        zIndex: 3,
+                      }}
+                    />
+                    {/* Right output port dot */}
+                    <div
+                      style={{
+                        position: "absolute",
+                        right: "-5px",
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                        width: "10px",
+                        height: "10px",
+                        borderRadius: "50%",
+                        background: "#0d1520",
+                        border: `2px solid ${hasInboundFeed ? "#f59e0b" : "#818cf8"}`,
+                        pointerEvents: "none",
+                        zIndex: 3,
+                      }}
+                    />
                     <div className="script-card-icon" style={{ color: "#818cf8" }}>
                       <Icon name="bolt" />
                     </div>
@@ -703,8 +1092,10 @@ export function ProvenanceView({
                 width: `${gap2}px`,
                 flexShrink: 0,
                 display: "flex",
+                flexDirection: "column",
                 alignItems: "center",
-                justifyContent: "center",
+                justifyContent: "flex-start",
+                paddingTop: "20px",
                 cursor: "col-resize",
                 position: "relative",
                 zIndex: 4,
@@ -713,17 +1104,18 @@ export function ProvenanceView({
             >
               <div
                 style={{
-                  padding: "3px 8px",
-                  borderRadius: "10px",
-                  background: "rgba(15, 23, 42, 0.85)",
-                  border: "1px solid #334155",
-                  color: "#94a3b8",
-                  fontSize: "9px",
+                  padding: "4px 8px",
+                  borderRadius: "12px",
+                  background: "#0d1520",
+                  border: "1px solid #10b981",
+                  color: "#10b981",
+                  fontSize: "9.5px",
+                  fontWeight: 600,
                   display: "flex",
                   alignItems: "center",
                   gap: "4px",
                   userSelect: "none",
-                  pointerEvents: "none",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.5)",
                 }}
               >
                 <span>‹</span>
@@ -763,11 +1155,28 @@ export function ProvenanceView({
                         alignItems: "center",
                         gap: "10px",
                         height: "56px",
+                        position: "relative",
                         boxSizing: "border-box",
                         transition: "all 0.15s ease",
                         boxShadow: isSelected ? "0 0 14px rgba(16, 185, 129, 0.25)" : "none",
                       }}
                     >
+                      {/* Left input port dot */}
+                      <div
+                        style={{
+                          position: "absolute",
+                          left: "-5px",
+                          top: "50%",
+                          transform: "translateY(-50%)",
+                          width: "10px",
+                          height: "10px",
+                          borderRadius: "50%",
+                          background: "#0d1520",
+                          border: `2px solid ${isSelected ? "#10b981" : "#34d399"}`,
+                          pointerEvents: "none",
+                          zIndex: 3,
+                        }}
+                      />
                       <div className="export-card-icon" style={{ color: "#10b981" }}>
                         <Icon name="file" />
                       </div>
@@ -890,7 +1299,16 @@ export function ProvenanceView({
                 <div className="lineage-tree-view">
                   <div style={{ padding: "10px", background: "#090d14", border: "1px solid #1e293b", borderRadius: "6px", marginBottom: "10px" }}>
                     <span style={{ fontSize: "10px", color: "#38bdf8", fontWeight: 600 }}>LEVEL 1: SOURCE EVIDENCE</span>
-                    <div style={{ fontSize: "11px", color: "#f8fafc", marginTop: "4px" }}>{caseName} (Raw Directory)</div>
+                    {evidenceRoots
+                      .filter((r) => isRootConnectedToScript(r.name, selectedExport.scriptName))
+                      .map((r) => (
+                        <div key={r.id} style={{ fontSize: "11px", color: "#f8fafc", marginTop: "4px", display: "flex", alignItems: "center", gap: "6px" }}>
+                          <span style={{ color: "#38bdf8" }}>📁</span> {r.name} ({r.files.length} artifacts)
+                        </div>
+                      ))}
+                    {evidenceRoots.filter((r) => isRootConnectedToScript(r.name, selectedExport.scriptName)).length === 0 && (
+                      <div style={{ fontSize: "11px", color: "#f8fafc", marginTop: "4px" }}>{caseName} (Raw Directory)</div>
+                    )}
                   </div>
 
                   <div style={{ textAlign: "center", color: "#64748b", fontSize: "12px", margin: "4px 0" }}>↓</div>

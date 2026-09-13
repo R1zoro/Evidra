@@ -50,14 +50,22 @@ def compute_fingerprint(operation: IROperation, values: dict[str, object]) -> st
 
         if val is not None:
             if hasattr(val, "resolve"):
-                resolved_args.append(str(val.resolve()))
+                p = Path(val).resolve()
+                if p.is_file():
+                    resolved_args.append(f"{p}:{p.stat().st_size}:{p.stat().st_mtime_ns}")
+                elif p.is_dir():
+                    files = [f for f in p.rglob("*") if f.is_file()]
+                    max_mtime = max((f.stat().st_mtime_ns for f in files), default=0)
+                    resolved_args.append(f"{p}:{len(files)}:{max_mtime}")
+                else:
+                    resolved_args.append(str(p))
             elif isinstance(val, list):
                 sub_hashes = []
                 for item in val[:50]:
                     if hasattr(item, "id"):
-                        sub_hashes.append(str(item.id))
+                        sub_hashes.append(f"{item.id}:{getattr(item, 'sha256', '')}")
                     elif isinstance(item, dict) and "id" in item:
-                        sub_hashes.append(str(item["id"]))
+                        sub_hashes.append(f"{item['id']}:{item.get('sha256', '')}")
                     else:
                         sub_hashes.append(str(hash(str(item))))
                 resolved_args.append(f"list:{len(val)}:[{','.join(sub_hashes)}]")
@@ -84,7 +92,19 @@ def execute_ir(
     """Execute the safe read-only v0.1 capabilities represented by an IR."""
     provider = provider or FileSystemProvider()
     resolved_evidence = Path(evidence_root).resolve()
-    resolved_workspace = Path(workspace_root).resolve() if workspace_root else None
+    if workspace_root:
+        resolved_workspace = Path(workspace_root).resolve()
+    else:
+        p = resolved_evidence
+        if "Evidence" in p.parts:
+            cur = p
+            while cur.name != "Evidence" and cur.parent != cur:
+                cur = cur.parent
+            resolved_workspace = cur.parent if cur.name == "Evidence" else p
+        elif (p / "Evidence").exists() or (p / "Outputs").exists():
+            resolved_workspace = p
+        else:
+            resolved_workspace = p
     values: dict[str, object] = {"EVID-001": resolved_evidence}
     steps: list[ExecutionStep] = []
     results: list[ResultEnvelope] = []
@@ -96,16 +116,12 @@ def execute_ir(
             failed_ids.add(operation.id)
             continue
         try:
-            fingerprint = compute_fingerprint(operation, values)
-            cached = cache_lookup(fingerprint) if cache_lookup else None
-
-            if cached:
-                cached_val = cached["value"]
-                # For side-effecting operations like export, ensure destination file actually exists on disk!
-                if operation.capability == "export":
-                    dest_file = cached_val.get("file_path") if isinstance(cached_val, dict) else None
-                    if not dest_file or not Path(dest_file).exists():
-                        cached = None
+            # Deliverable exports always execute fresh to ensure disk state matches
+            if operation.capability == "export":
+                cached = None
+            else:
+                fingerprint = compute_fingerprint(operation, values)
+                cached = cache_lookup(fingerprint) if cache_lookup else None
 
             if cached:
                 cached_val = cached["value"]
@@ -172,13 +188,12 @@ def _execute_operation(
             if not target.exists() and "/" not in dest and "\\" not in dest:
                 target = (workspace_resolved / "Evidence" / dest).resolve()
 
-            if not target.exists():
-                import shutil
-                if Path(source).is_dir():
-                    shutil.copytree(source, target)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(source, target)
+            import shutil
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if Path(source).is_dir():
+                shutil.copytree(source, target, dirs_exist_ok=True)
+            else:
+                shutil.copy2(source, target)
 
             return "EvidenceReference", target, tuple(operation.inputs)
         return "EvidenceReference", source, tuple(operation.inputs)
@@ -679,7 +694,10 @@ def _perform_export(source: object, destination: str | None, workspace_root: Pat
     elif workspace_root:
         clean_rel = dest_clean.replace("\\", "/")
         while clean_rel.startswith("./") or clean_rel.startswith("/"):
-            clean_rel = clean_rel.lstrip("./").lstrip("/")
+            if clean_rel.startswith("./"):
+                clean_rel = clean_rel[2:]
+            elif clean_rel.startswith("/"):
+                clean_rel = clean_rel[1:]
         target_path = (workspace_root.resolve() / clean_rel).resolve()
     else:
         target_path = Path(dest_clean).resolve()

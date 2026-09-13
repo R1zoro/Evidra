@@ -2,6 +2,7 @@ import { useState } from "react";
 
 export function Docs() {
   const [copiedScript, setCopiedScript] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(100);
 
   const demoScript = `# JOCKY Forensic Investigation Procedure
 # Digital Forensics Domain-Specific Language
@@ -33,12 +34,62 @@ export function Docs() {
   };
 
   return (
-    <div className="docs-view">
-      <header className="docs-header">
-        <small>EVIDRA · JOCKY DOMAIN-SPECIFIC LANGUAGE</small>
-        <h1>JOCKY Specification, Rules & Capabilities</h1>
-        <p>Reference guide for non-destructive digital forensic automation, deterministic lowering, and multi-vector correlation.</p>
-      </header>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", width: "100%", overflow: "hidden", background: "#090d14" }}>
+      {/* Sticky Top Zoom Controls */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          padding: "8px 24px",
+          background: "#0b1118",
+          borderBottom: "1px solid #1e293b",
+          flexShrink: 0,
+          zIndex: 10,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <span style={{ fontSize: "11px", color: "#38bdf8", fontWeight: 700, letterSpacing: "0.5px" }}>
+            JOCKY FORENSIC SPECIFICATION & METHODOLOGIES
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <span style={{ fontSize: "10.5px", color: "#64748b", fontWeight: 600 }}>ZOOM:</span>
+          <button
+            onClick={() => setZoomLevel((prev) => Math.max(prev - 10, 70))}
+            style={{ padding: "2px 8px", background: "#0d1520", border: "1px solid #1e293b", color: "#cbd5e1", borderRadius: "4px", cursor: "pointer", fontSize: "11px", fontWeight: "bold" }}
+            title="Zoom Out"
+          >
+            −
+          </button>
+          <span style={{ fontSize: "11px", color: "#38bdf8", minWidth: "40px", textAlign: "center", fontFamily: "monospace", fontWeight: 600 }}>
+            {zoomLevel}%
+          </span>
+          <button
+            onClick={() => setZoomLevel((prev) => Math.min(prev + 10, 160))}
+            style={{ padding: "2px 8px", background: "#0d1520", border: "1px solid #1e293b", color: "#cbd5e1", borderRadius: "4px", cursor: "pointer", fontSize: "11px", fontWeight: "bold" }}
+            title="Zoom In"
+          >
+            +
+          </button>
+          <button
+            onClick={() => setZoomLevel(100)}
+            style={{ padding: "2px 8px", background: "#0d1520", border: "1px solid #1e293b", color: "#94a3b8", borderRadius: "4px", cursor: "pointer", fontSize: "10.5px" }}
+            title="Reset Zoom to 100%"
+          >
+            Reset
+          </button>
+        </div>
+      </div>
+
+      {/* Scalable Content Area */}
+      <div style={{ flex: 1, overflow: "auto" }}>
+        <div className="docs-view" style={{ zoom: `${zoomLevel}%` }}>
+          <header className="docs-header">
+            <small>EVIDRA · JOCKY DOMAIN-SPECIFIC LANGUAGE</small>
+            <h1>JOCKY Specification, Rules & Capabilities</h1>
+            <p>Reference guide for non-destructive digital forensic automation, deterministic lowering, and multi-vector correlation.</p>
+          </header>
 
       {/* 1. Core Principles & Philosophy */}
       <section className="docs-section">
@@ -309,13 +360,15 @@ export function Docs() {
       <section className="docs-section">
         <h2>5. Complete Forensic Investigation Procedure</h2>
         <p>Verified end-to-end investigation procedure matching the full forensic capability pipeline:</p>
-        <div className="docs-code-card">
-          <button className="copy-code-floating-btn" onClick={copyScript}>
-            {copiedScript ? "✓ Copied!" : "📋 Copy Script"}
-          </button>
-          <pre>{demoScript}</pre>
-        </div>
-      </section>
+          <div className="docs-code-card">
+            <button className="copy-code-floating-btn" onClick={copyScript}>
+              {copiedScript ? "✓ Copied!" : "📋 Copy Script"}
+            </button>
+            <pre>{demoScript}</pre>
+          </div>
+        </section>
+      </div>
     </div>
+  </div>
   );
 }

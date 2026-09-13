@@ -124,6 +124,20 @@ class FileSystemProvider:
         paths = [root] if root.is_file() else [path for path in root.rglob("*") if path.is_file()]
         return [self._artifact(root, path) for path in sorted(paths)]
 
+    @staticmethod
+    def _resolve_artifact_path(root: Path, artifact: ArtifactRecord) -> Path:
+        p = root / artifact.relative_path
+        if p.exists() and p.is_file():
+            return p
+        if root.exists() and root.is_dir():
+            found = next((f for f in root.rglob(artifact.name) if f.is_file()), None)
+            if found:
+                return found
+        direct = Path(artifact.relative_path)
+        if direct.exists() and direct.is_file():
+            return direct
+        return p
+
     def filter_artifacts(self, artifacts: list[ArtifactRecord], extension: str) -> list[ArtifactRecord]:
         normalized = extension.lower() if extension.startswith(".") else f".{extension.lower()}"
         return [artifact for artifact in artifacts if artifact.extension.lower() == normalized]
@@ -132,9 +146,7 @@ class FileSystemProvider:
         root = Path(source).resolve()
         records: list[MetadataRecord] = []
         for artifact in artifacts:
-            path = root / artifact.relative_path
-            if not path.exists():
-                path = Path(artifact.relative_path)
+            path = self._resolve_artifact_path(root, artifact)
             stat = path.stat() if path.exists() else None
             modified = (
                 datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()
@@ -433,9 +445,7 @@ class FileSystemProvider:
             if not is_pf and not is_exec:
                 continue
 
-            file_path = root / artifact.relative_path
-            if not file_path.exists():
-                file_path = Path(artifact.relative_path)
+            file_path = self._resolve_artifact_path(root, artifact)
 
             file_bytes = b""
             if file_path.exists() and file_path.is_file():
@@ -504,12 +514,16 @@ class FileSystemProvider:
                 Path(clean_rule_str),
                 root / clean_rule_str,
             ]
+            if root.exists() and root.is_dir():
+                candidates.extend(list(root.rglob(clean_rule_str))[:5])
             if workspace_root:
                 candidates.extend([
                     workspace_root / clean_rule_str,
                     workspace_root / "Rules" / clean_rule_str,
                     workspace_root / "rules" / clean_rule_str,
                 ])
+                if workspace_root.exists() and workspace_root.is_dir():
+                    candidates.extend(list(workspace_root.rglob(clean_rule_str))[:5])
 
             found_rule_file = next((c for c in candidates if c.exists() and c.is_file()), None)
             if found_rule_file:
@@ -526,9 +540,7 @@ class FileSystemProvider:
             try:
                 compiled = yara.compile(source=resolved_rules_text)
                 for artifact in artifacts:
-                    fpath = root / artifact.relative_path
-                    if not fpath.exists():
-                        fpath = Path(artifact.relative_path)
+                    fpath = self._resolve_artifact_path(root, artifact)
 
                     data = b""
                     if fpath.exists() and fpath.is_file():
@@ -575,9 +587,7 @@ class FileSystemProvider:
         # 2. Pure-Python Fallback YARA Engine (Guarantees zero-dependency forensic resilience)
         rules_parsed = self._parse_pure_yara_rules(resolved_rules_text)
         for artifact in artifacts:
-            fpath = root / artifact.relative_path
-            if not fpath.exists():
-                fpath = Path(artifact.relative_path)
+            fpath = self._resolve_artifact_path(root, artifact)
             content_str = ""
             if fpath.exists() and fpath.is_file():
                 try:
@@ -671,9 +681,7 @@ class FileSystemProvider:
             if not is_pcap:
                 continue
 
-            file_path = root / artifact.relative_path
-            if not file_path.exists():
-                file_path = Path(artifact.relative_path)
+            file_path = self._resolve_artifact_path(root, artifact)
 
             file_bytes = b""
             if file_path.exists() and file_path.is_file():
@@ -826,9 +834,7 @@ class FileSystemProvider:
             if not is_reg:
                 continue
 
-            file_path = root / artifact.relative_path
-            if not file_path.exists():
-                file_path = Path(artifact.relative_path)
+            file_path = self._resolve_artifact_path(root, artifact)
 
             file_text = ""
             if file_path.exists() and file_path.is_file():
@@ -991,9 +997,7 @@ class FileSystemProvider:
             return results
 
         for art in mem_artifacts:
-            art_path = root / art.relative_path
-            if not art_path.exists():
-                art_path = Path(art.relative_path)
+            art_path = self._resolve_artifact_path(root, art)
             if not art_path.exists() or not art_path.is_file():
                 continue
 

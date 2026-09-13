@@ -43,6 +43,16 @@ class RuntimeService:
         except ValueError as error:
             return {"status": "failed", "diagnostics": [str(error)], "steps": [], "results": []}
         workspace = self.store.get_workspace(case_id) if self.store else None
+        if not workspace:
+            p = Path(evidence_root).resolve()
+            if "Evidence" in p.parts:
+                cur = p
+                while cur.name != "Evidence" and cur.parent != cur:
+                    cur = cur.parent
+                workspace = str(cur.parent if cur.name == "Evidence" else p)
+            else:
+                workspace = str(p)
+
         
         cache_lookup = self.store.get_cached_result if self.store else None
         on_cache_miss = self.store.save_cached_result if self.store else None
@@ -83,57 +93,91 @@ class RuntimeService:
     def _materialize_requested_source(self, source: str, case_id: str, reference: str) -> None:
         if not self.store:
             return
-        materialize_match = re.search(
+        materialize_matches = list(re.finditer(
             r'(?:evidence\.materialize|copy)\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))(?:\s+as\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+)))?(?:\s*(?:to|>)?\s*\"([^\"]+)\")?',
             source,
-        )
-        if not materialize_match:
+        ))
+        if not materialize_matches:
             return
-        src_name = materialize_match.group(1) or materialize_match.group(2) or reference
-        dest_val = materialize_match.group(5) or materialize_match.group(3) or materialize_match.group(4)
-
-        # Resolve any variable bindings, e.g. source = evidence.import "Sources/Alpha_Host"
-        var_match = re.search(rf'\b{re.escape(src_name)}\s*=\s*(?:evidence\.import)\s+["\']([^"\']+)["\']', source)
-        if var_match:
-            imported_ref = var_match.group(1)
-            clean_name = imported_ref.replace("\\", "/").rstrip("/").split("/")[-1]
-            source_record = (
-                self.store.find_source_reference(case_id, clean_name)
-                or self.store.find_source_reference(case_id, imported_ref)
-                or self.store.find_source_reference(case_id, reference)
-            )
-        else:
-            source_record = self.store.find_source_reference(case_id, src_name) or self.store.find_source_reference(case_id, reference)
 
         workspace = self.store.get_workspace(case_id)
-        if not source_record or not workspace:
-            return
-        if dest_val:
-            val = dest_val.strip()
-            dest_clean = val if "/" in val or "\\" in val else f"Evidence/{val}"
-        else:
-            dest_clean = f"Evidence/{source_record['name']}"
-        destination = dest_clean.strip().replace("\\", "/").strip("./").strip("/")
-        if destination.startswith("/") or ".." in Path(destination).parts:
-            raise ValueError("materialization destination must be a relative path inside the case")
-        target = (Path(workspace) / destination).resolve()
-        if Path(workspace).resolve() not in target.parents:
-            raise ValueError("materialization destination escapes the case workspace")
-        if target.exists():
-            existing_ev = self.store.find_evidence_reference(case_id, target.name)
-            if not existing_ev:
-                count = sum(1 for item in target.rglob("*") if item.is_file()) if target.is_dir() else 1
-                self.store.register_evidence(case_id, self.store.next_evidence_id(), target.name, str(target), count)
-            return
-        source_path = Path(source_record["source_path"])
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if source_path.is_dir():
-            shutil.copytree(source_path, target)
-            count = sum(1 for item in target.rglob("*") if item.is_file())
-        else:
-            shutil.copy2(source_path, target)
-            count = 1
-        self.store.register_evidence(case_id, self.store.next_evidence_id(), target.name, str(target), count)
+        if not workspace:
+            if reference and Path(reference).exists():
+                p = Path(reference).resolve()
+                if "Evidence" in p.parts:
+                    cur = p
+                    while cur.name != "Evidence" and cur.parent != cur:
+                        cur = cur.parent
+                    workspace = str(cur.parent if cur.name == "Evidence" else p)
+                else:
+                    workspace = str(p)
+            else:
+                workspace = str(Path(".").resolve())
+
+        for materialize_match in materialize_matches:
+            src_name = materialize_match.group(1) or materialize_match.group(2) or reference
+            dest_val = materialize_match.group(5) or materialize_match.group(3) or materialize_match.group(4)
+
+            # Resolve any variable bindings, e.g. source = evidence.import "Sources/Alpha_Host"
+            var_match = re.search(rf'\b{re.escape(src_name)}\s*=\s*(?:evidence\.import)\s+["\']([^"\']+)["\']', source)
+            imported_ref = var_match.group(1) if var_match else None
+
+            source_record = None
+            if imported_ref:
+                clean_name = imported_ref.replace("\\", "/").rstrip("/").split("/")[-1]
+                source_record = (
+                    self.store.find_source_reference(case_id, clean_name)
+                    or self.store.find_source_reference(case_id, imported_ref)
+                )
+                if not source_record:
+                    # Check if imported_ref exists directly on disk or inside workspace
+                    p_imp = Path(imported_ref)
+                    candidate = p_imp if p_imp.exists() else None
+                    if not candidate and workspace:
+                        ws_cand = (Path(workspace) / imported_ref.replace("\\", "/").strip("./").strip("/")).resolve()
+                        if ws_cand.exists():
+                            candidate = ws_cand
+                    if candidate and candidate.exists():
+                        resolved = candidate.resolve()
+                        s_name = clean_name or resolved.name
+                        source_record = self.store.register_source(case_id, s_name, str(resolved), f"fp-{s_name.lower()}")
+            else:
+                source_record = self.store.find_source_reference(case_id, src_name) or self.store.find_source_reference(case_id, reference)
+                if not source_record:
+                    p_src = Path(src_name)
+                    if p_src.exists():
+                        resolved = p_src.resolve()
+                        source_record = self.store.register_source(case_id, resolved.name, str(resolved), f"fp-{resolved.name.lower()}")
+
+            if not source_record or not workspace:
+                continue
+
+            if dest_val:
+                val = dest_val.strip()
+                dest_clean = val if "/" in val or "\\" in val else f"Evidence/{val}"
+            else:
+                dest_clean = f"Evidence/{source_record['name']}"
+            destination = dest_clean.strip().replace("\\", "/").strip("./").strip("/")
+            if destination.startswith("/") or ".." in Path(destination).parts:
+                raise ValueError("materialization destination must be a relative path inside the case")
+            target = (Path(workspace) / destination).resolve()
+            if Path(workspace).resolve() not in target.parents:
+                raise ValueError("materialization destination escapes the case workspace")
+
+            source_path = Path(source_record["source_path"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source_path.is_dir():
+                if target.is_file():
+                    target.unlink()
+                shutil.copytree(source_path, target, dirs_exist_ok=True)
+                count = sum(1 for item in target.rglob("*") if item.is_file())
+            else:
+                if target.is_dir():
+                    shutil.copy2(source_path, target / source_path.name)
+                else:
+                    shutil.copy2(source_path, target)
+                count = 1
+            self.store.register_evidence(case_id, self.store.next_evidence_id(), target.name, str(target), count)
 
     def _resolve_evidence_root(self, source: str, fallback: str | Path, case_id: str) -> tuple[str, str | Path]:
         if not self.store:
