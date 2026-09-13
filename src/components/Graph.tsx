@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import type { RuntimeExecutionResponse } from '../api/runtimeClient';
 import { Icon } from './Icon';
 import { ProvenanceView } from './ProvenanceView';
@@ -34,6 +34,7 @@ export function Graph({
   onSelectDoc,
   onRunScript,
   onRunAll: _onRunAll,
+  activeDocPath,
 }: {
   response: RuntimeExecutionResponse | null;
   runHistory: { scriptName: string; docPath: string; response: RuntimeExecutionResponse }[];
@@ -42,6 +43,7 @@ export function Graph({
   onSelectDoc?: (path: string) => void;
   onRunScript?: (scriptName: string) => void;
   onRunAll?: () => void;
+  activeDocPath?: string | null;
 }) {
   const [graphMode, setGraphMode] = useState<GraphMode>("pipeline");
   const [showStatus, setShowStatus] = useState(true);
@@ -49,14 +51,33 @@ export function Graph({
   const [collapsedLanes, setCollapsedLanes] = useState<Record<string, boolean>>({});
   const [selectedStep, setSelectedStep] = useState<PipelineStep | null>(null);
   const [selectedLane, setSelectedLane] = useState<ScriptLane | null>(null);
+  const [selectedRunByScript, setSelectedRunByScript] = useState<Record<string, number>>({});
 
   const toggleLaneCollapse = (laneId: string) => {
     setCollapsedLanes((prev) => ({ ...prev, [laneId]: !prev[laneId] }));
   };
 
-  // Build lanes from real runHistory
-  const lanesToDisplay: ScriptLane[] = runHistory.map((realRun, idx) => {
-    const mappedSteps: PipelineStep[] = realRun.response.steps.map((step, sIdx) => {
+  // Group runs by scriptName to prevent duplicate lane clutter
+  const runsByScript = useMemo(() => {
+    const map = new Map<string, { runIndex: number; runNumber: number; docPath: string; response: RuntimeExecutionResponse }[]>();
+    runHistory.forEach((r, idx) => {
+      const list = map.get(r.scriptName) || [];
+      list.push({ runIndex: idx, runNumber: list.length + 1, docPath: r.docPath, response: r.response });
+      map.set(r.scriptName, list);
+    });
+    return map;
+  }, [runHistory]);
+
+  const uniqueScripts = Array.from(runsByScript.keys());
+
+  const lanesToDisplay = uniqueScripts.map((scriptName, sIdx) => {
+    const runs = runsByScript.get(scriptName) || [];
+    const chosenRunIdx = selectedRunByScript[scriptName] !== undefined
+      ? selectedRunByScript[scriptName]
+      : runs.length - 1;
+    const activeRun = runs[chosenRunIdx] || runs[runs.length - 1];
+
+    const mappedSteps: PipelineStep[] = (activeRun?.response?.steps || []).map((step, stepIdx) => {
       let cat: PipelineStep["category"] = "scan";
       if (step.capability.includes("import")) cat = "import";
       else if (step.capability.includes("copy")) cat = "copy";
@@ -78,7 +99,7 @@ export function Graph({
         : "skipped";
 
       return {
-        id: `s-lane${idx}-step${sIdx}`,
+        id: `lane-${sIdx}-step-${step.operation_id || stepIdx}`,
         name: step.capability.replace(/\./g, " ").replace(/\b\w/g, (c) => c.toUpperCase()),
         capability: step.capability,
         category: cat,
@@ -88,13 +109,20 @@ export function Graph({
     });
 
     return {
-      id: `lane-${idx}`,
-      scriptName: realRun.scriptName,
-      status: realRun.response.status === "completed" ? "completed" : "failed",
+      id: `lane-${sIdx}-${scriptName}`,
+      scriptName: scriptName,
+      status: (activeRun?.response?.status === "completed" ? "completed" : "failed") as ScriptLane["status"],
       blockCount: mappedSteps.length,
-      duration: realRun.response.results?.length ? "Completed" : "00:00:00",
+      duration: activeRun?.response?.results?.length ? "Completed" : "00:00:00",
       lastRun: new Date().toLocaleTimeString(),
       steps: mappedSteps,
+      allRuns: runs.map((r, i) => ({
+        runIndex: i,
+        runNumber: r.runNumber,
+        timestamp: `Run #${r.runNumber}`,
+        status: r.response.status,
+      })),
+      selectedRunIdx: chosenRunIdx,
     };
   });
 
@@ -176,7 +204,7 @@ export function Graph({
                     <section key={lane.id} className="pipeline-lane">
                       {/* Lane Header */}
                       <div className="lane-header">
-                        <div className="lane-title">
+                        <div className="lane-title" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                           <Icon name="bolt" />
                           <strong
                             style={{ cursor: "pointer" }}
@@ -188,6 +216,35 @@ export function Graph({
                           <span style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", background: lane.status === 'completed' ? 'rgba(16,185,129,0.18)' : 'rgba(239,68,68,0.18)', color: lane.status === 'completed' ? '#34d399' : '#f87171' }}>
                             ● {lane.status.charAt(0).toUpperCase() + lane.status.slice(1)}
                           </span>
+
+                          {/* Run Version History Dropdown */}
+                          {lane.allRuns.length > 1 && (
+                            <div style={{ display: "flex", alignItems: "center", gap: "5px", marginLeft: "6px" }}>
+                              <span style={{ fontSize: "10px", color: "#64748b" }}>History:</span>
+                              <select
+                                value={lane.selectedRunIdx}
+                                onChange={(e) => setSelectedRunByScript((prev) => ({ ...prev, [lane.scriptName]: Number(e.target.value) }))}
+                                style={{
+                                  background: "#0f172a",
+                                  border: "1px solid #334155",
+                                  color: "#38bdf8",
+                                  fontSize: "10px",
+                                  fontWeight: 600,
+                                  borderRadius: "4px",
+                                  padding: "2px 6px",
+                                  cursor: "pointer",
+                                  outline: "none"
+                                }}
+                              >
+                                {lane.allRuns.map((r) => (
+                                  <option key={r.runIndex} value={r.runIndex}>
+                                    {r.runIndex === lane.allRuns.length - 1 ? `Run #${r.runNumber} (Latest)` : `Run #${r.runNumber}`}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+
                           <span style={{ fontSize: "10px", color: "#64748b", fontFamily: "Cascadia Code, monospace" }}>
                             · {lane.blockCount} blocks | {lane.duration} | Last run: {lane.lastRun}
                           </span>
@@ -250,10 +307,12 @@ export function Graph({
                                   <div className="step-node-cap">{step.capability}</div>
                                 </div>
 
-                                {/* Connecting Arrow between Nodes */}
+                                {/* Styled SVG Arrow Connector between Nodes */}
                                 {!isLast && (
-                                  <div className="step-arrow-connector">
-                                    ▶
+                                  <div className="step-arrow-connector" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.85 }}>
+                                      <polyline points="9 18 15 12 9 6" />
+                                    </svg>
                                   </div>
                                 )}
                               </React.Fragment>
@@ -401,6 +460,7 @@ export function Graph({
           runHistory={runHistory}
           caseName={caseName}
           onSelectDoc={onSelectDoc}
+          activeDocPath={activeDocPath}
         />
       )}
     </div>

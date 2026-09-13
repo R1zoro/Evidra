@@ -50,10 +50,14 @@ export const blankSource = `# JOCKY Forensic Investigation Procedure
 
 export default function App() {
   const [opened, setOpened] = useState(Boolean(sessionStorage.getItem("evidra.caseId")));
-  return opened ? <Workspace /> : <CaseGate onOpen={() => setOpened(true)} />;
+  return opened ? (
+    <Workspace onSwitchCase={() => setOpened(false)} />
+  ) : (
+    <CaseGate onOpen={() => setOpened(true)} />
+  );
 }
 
-function Workspace() {
+function Workspace({ onSwitchCase }: { onSwitchCase?: () => void }) {
   const caseId = sessionStorage.getItem("evidra.caseId") ?? "CASE-NEW";
   const caseName = sessionStorage.getItem("evidra.caseName") ?? "Untitled investigation";
   const caseRoot = sessionStorage.getItem("evidra.caseRoot") ?? "";
@@ -161,7 +165,31 @@ function Workspace() {
 
   const refresh = async () => {
     try {
-      const snap = await client.getSnapshot(caseId);
+      let snap = await client.getSnapshot(caseId);
+      // Restore persisted external sources from localStorage if backend restarted
+      try {
+        const storageKey = `evidra.sources.${caseId}`;
+        const persistedRaw = localStorage.getItem(storageKey);
+        if (persistedRaw) {
+          const persisted: { path: string; name: string }[] = JSON.parse(persistedRaw);
+          if (Array.isArray(persisted)) {
+            let reloadedAny = false;
+            for (const s of persisted) {
+              if (s.path && !snap.sources?.some((existing) => existing.source_path === s.path)) {
+                await client.registerSource(caseId, s.path, s.name).catch(() => {});
+                reloadedAny = true;
+              }
+            }
+            if (reloadedAny) {
+              snap = await client.getSnapshot(caseId).catch(() => snap);
+            }
+          }
+        } else if (snap.sources && snap.sources.length > 0) {
+          const toStore = snap.sources.map((s) => ({ path: s.source_path, name: s.name }));
+          localStorage.setItem(storageKey, JSON.stringify(toStore));
+        }
+      } catch {}
+
       setSnapshot(snap);
       if (snap.runs && snap.runs.length > 0 && runHistory.length === 0) {
         const latestRun = snap.runs[0];
@@ -346,6 +374,14 @@ function Workspace() {
       if (!name?.trim()) return;
       try {
         const result = await client.registerSource(caseId, sourcePath, name.trim());
+        try {
+          const storageKey = `evidra.sources.${caseId}`;
+          const currentList: { path: string; name: string }[] = JSON.parse(localStorage.getItem(storageKey) || "[]");
+          if (!currentList.some((s) => s.path === sourcePath)) {
+            currentList.push({ path: sourcePath, name: name.trim() });
+            localStorage.setItem(storageKey, JSON.stringify(currentList));
+          }
+        } catch {}
         setSnapshot(result.snapshot);
         setSideView("SOURCES");
         setNotice(result.source.existing ? "Source was already registered." : `Registered source: Sources/${result.source.name}`);
@@ -440,7 +476,18 @@ function Workspace() {
     sessionStorage.removeItem("evidra.caseId");
     sessionStorage.removeItem("evidra.caseName");
     sessionStorage.removeItem("evidra.caseRoot");
-    window.location.reload();
+    setRunHistory([]);
+    setResponse(null);
+    setOpenDocs([]);
+    setActiveDocPath(null);
+    setFindings([]);
+    setSnapshot(null);
+    setTree([]);
+    if (onSwitchCase) {
+      onSwitchCase();
+    } else {
+      window.location.reload();
+    }
   };
 
   return (
@@ -481,6 +528,8 @@ function Workspace() {
               findings={findings}
               openDocs={openDocs}
               activeDocPath={activeDocPath}
+              runHistory={runHistory}
+              response={response}
               onOpenFile={openFileByNode}
               onNewFile={(targetDir) => setDialog({ type: "new-file", targetDir })}
               onNewFolder={(targetDir) => setDialog({ type: "new-folder", targetDir })}
@@ -564,6 +613,7 @@ function Workspace() {
               runHistory={runHistory}
               tree={tree}
               caseName={caseName}
+              activeDocPath={activeDocPath}
               onSelectDoc={(path) => {
                 setActiveDocPath(path);
                 setView("JOCKY");
@@ -595,7 +645,14 @@ function Workspace() {
           {view === "HELP" && <Help />}
         </main>
 
-        {view === "JOCKY" && <Results response={response} onBookmarkFinding={addFinding} />}
+        {view === "JOCKY" && (
+          <Results
+            response={response}
+            runHistory={runHistory}
+            activeDocPath={activeDocPath}
+            onBookmarkFinding={addFinding}
+          />
+        )}
       </div>
 
       <footer className="status-bar">
@@ -798,9 +855,9 @@ function AppMenu({
       <button className="menu-settings" onClick={() => onView("HELP")} title="About & Help"><Icon name="help" /></button>
       {isDesktop() && (
         <div className="window-controls">
-          <button onClick={() => window.evidraDesktop?.windowControl("minimize")} title="Minimize">─</button>
-          <button onClick={() => window.evidraDesktop?.windowControl("maximize")} title="Maximize">□</button>
-          <button className="window-close" onClick={() => window.evidraDesktop?.windowControl("close")} title="Close">✕</button>
+          <button className="window-control-btn" onClick={() => window.evidraDesktop?.windowControl("minimize")} title="Minimize">─</button>
+          <button className="window-control-btn" onClick={() => window.evidraDesktop?.windowControl("maximize")} title="Maximize">□</button>
+          <button className="window-control-btn window-close" onClick={() => window.evidraDesktop?.windowControl("close")} title="Close">✕</button>
         </div>
       )}
     </header>

@@ -110,10 +110,15 @@ class EvidraRequestHandler(BaseHTTPRequestHandler):
         self._send_json({"error": "route not found"}, 404)
 
     def _create_case(self, body: dict[str, Any]) -> None:
-        case_id = str(body.get("id") or f"CASE-{uuid4().hex[:8].upper()}")
-        name = str(body.get("name") or case_id)
-        root = Path(str(body.get("root") or (IMPORTED_ROOT / case_id))).resolve()
+        case_id = str(body.get("id") or "")
+        name = str(body.get("name") or "")
+        root = Path(str(body.get("root") or (IMPORTED_ROOT / (case_id or "CASE-NEW")))).resolve()
         folders = body.get("folders") if isinstance(body.get("folders"), list) else []
+        if not name:
+            name = root.name or "Untitled Case"
+        if not case_id:
+            path_hash = hashlib.sha256(str(root).encode()).hexdigest()[:6].upper()
+            case_id = f"CASE-{name.upper()[:14]}-{path_hash}"
         try:
             root.mkdir(parents=True, exist_ok=True)
             internal = root / ".evidra"
@@ -139,20 +144,24 @@ class EvidraRequestHandler(BaseHTTPRequestHandler):
                 template_file.write_text(
                     "# JOCKY Forensic Investigation Procedure\n\n"
                     "[prepare]\n"
-                    '    source = evidence.import "C:\\\\Users\\\\XYLA\\\\Downloads\\\\Valora"\n'
+                    '    source = evidence.import "Evidence"\n'
                     '    working = copy source as "working_evidence"\n\n'
                     "[examine]\n"
                     "    artifacts = files.list working\n"
-                    '    suspicious = filter(extension == ".zip" | ".elf" | ".exe" | ".png") from artifacts\n'
+                    '    suspicious = filter(extension == ".zip" | ".elf" | ".exe" | ".png" | ".ps1") from artifacts\n'
                     "    metadata = metadata.extract suspicious\n"
                     "    prefetch = prefetch.extract artifacts\n"
+                    "    yara_hits = yara.scan artifacts\n"
+                    "    network = pcap.analyze artifacts\n"
+                    "    registry = registry.parse artifacts\n"
                     "    iocs = ioc.match artifacts\n\n"
                     "[analysis]\n"
                     "    events = events.extract from artifacts\n"
                     "    timeline = timeline.build from events\n"
-                    "    findings = correlate(suspicious, metadata, events, prefetch, iocs)\n\n"
+                    "    findings = correlate(suspicious, metadata, events, prefetch, yara_hits, network, registry, iocs)\n\n"
                     "[export]\n"
-                    '    export findings > "./Outputs/findings.json"\n',
+                    '    export findings > "./Outputs/findings.json"\n'
+                    '    export timeline > "./Outputs/timeline.csv"\n',
                     encoding="utf-8",
                 )
         except OSError as error:

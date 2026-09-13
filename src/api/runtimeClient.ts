@@ -20,7 +20,13 @@ export const runtimeBoundary = {
 export interface RuntimeExecutionResponse {
   status: string;
   diagnostics: string[];
-  context?: { source_reference: string; source_path: string };
+  context?: {
+    source_reference: string;
+    source_path: string;
+    script_name?: string;
+    cached?: boolean;
+    duration_ms?: number;
+  };
   steps: Array<{ operation_id: string; capability: string; status: string; result_id?: string; message?: string }>;
   results: Array<{ id: string; operation_id?: string; type: string; value: unknown; source_ids: string[]; status: string; provider?: string }>;
 }

@@ -13,7 +13,15 @@ export function CaseGate({ onOpen }: { onOpen: () => void }) {
 
   const create = async (root: string, fallbackName: string) => {
     const name = root.split(/[\\/]/).filter(Boolean).pop() || fallbackName;
-    const id = `CASE-${name.toUpperCase().replace(/[^A-Z0-9]+/g, "-").slice(0, 24).replace(/^-+|-+$/g, "") || "DEFAULT"}`;
+    let pathHash = "0000";
+    if (root) {
+      let h = 0;
+      for (let i = 0; i < root.length; i++) {
+        h = (Math.imul(31, h) + root.charCodeAt(i)) | 0;
+      }
+      pathHash = Math.abs(h).toString(36).toUpperCase().slice(0, 5);
+    }
+    const id = `CASE-${name.toUpperCase().replace(/[^A-Z0-9]+/g, "-").slice(0, 16).replace(/^-+|-+$/g, "") || "DEFAULT"}-${pathHash}`;
     try {
       const snapshot = await new LocalRuntimeClient().createCase({
         id,
@@ -49,6 +57,35 @@ export function CaseGate({ onOpen }: { onOpen: () => void }) {
 
   return (
     <main className="case-gate">
+      <div className="gate-titlebar">
+        <div className="gate-titlebar-title">
+          <span style={{ color: "#38bdf8", fontWeight: "bold", marginRight: "6px" }}>EVIDRA</span>
+          <span style={{ color: "#94a3b8", fontSize: "11px" }}>Forensic Workstation</span>
+        </div>
+        <div className="window-controls">
+          <button
+            className="window-control-btn"
+            onClick={() => window.evidraDesktop?.windowControl("minimize")}
+            title="Minimize"
+          >
+            ─
+          </button>
+          <button
+            className="window-control-btn"
+            onClick={() => window.evidraDesktop?.windowControl("maximize")}
+            title="Maximize"
+          >
+            □
+          </button>
+          <button
+            className="window-control-btn window-close"
+            onClick={() => window.evidraDesktop?.windowControl("close")}
+            title="Close"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
       <section className="case-gate-card">
         <div className="gate-logo">E</div>
         <div className="eyebrow">LOCAL FORENSIC WORKSPACE</div>

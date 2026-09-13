@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useMemo } from "react";
 import { Icon } from "./Icon";
 import type { RuntimeExecutionResponse } from "../api/runtimeClient";
 import type { FsNode } from "../types";
@@ -9,183 +9,266 @@ export interface ProvenanceViewProps {
   runHistory: { scriptName: string; docPath: string; response: RuntimeExecutionResponse }[];
   caseName?: string;
   onSelectDoc?: (path: string) => void;
+  activeDocPath?: string | null;
 }
 
-interface EvidenceFileItem {
+interface DynamicEvidenceFile {
   id: string;
   name: string;
   path: string;
   folder: string;
+  size?: number;
   isContributory: boolean;
+  scriptName?: string;
 }
 
-interface ExportItem {
+interface DynamicExportItem {
   id: string;
   name: string;
   type: string;
   path: string;
-  scriptId: string;
+  scriptName: string;
   format: string;
   size: string;
   generatedAt: string;
   description: string;
-  inputSources: {
-    folder: string;
-    items: { name: string; checked: boolean }[];
-  }[];
-  downstreamCount: number;
+  recordsCount: number;
+  sha256?: string;
+  previewData?: any;
+  inputSources: string[];
 }
 
 export function ProvenanceView({
-  tree: _tree,
-  response: _response,
-  runHistory: _runHistory,
+  tree = [],
+  response,
+  runHistory = [],
   caseName = "Company_Investigation",
-  onSelectDoc: _onSelectDoc,
+  onSelectDoc,
+  activeDocPath,
 }: ProvenanceViewProps) {
-  const [selectedExportId, setSelectedExportId] = useState<string>("exp-triage");
+  const [selectedExportId, setSelectedExportId] = useState<string>("");
+  const [selectedScriptId, setSelectedScriptId] = useState<string>("");
   const [activeTab, setActiveTab] = useState<"details" | "lineage" | "preview">("details");
+  const [filterMode, setFilterMode] = useState<string>("all");
   const [groupByScript, setGroupByScript] = useState(true);
   const [showFileNodes, setShowFileNodes] = useState(true);
   const [zoomLevel, setZoomLevel] = useState(100);
-  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({
-    "Documents": true,
-    "Finance": true,
-    "Downloads": true,
-    "Logs": false,
-    "Browser": false,
-  });
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
 
   const toggleFolder = (folder: string) => {
     setExpandedFolders((prev) => ({ ...prev, [folder]: !prev[folder] }));
   };
 
-  // Mocked/derived case evidence tree structure matching reference mockup
-  const evidenceSources = [
-    {
-      id: "src-1",
-      name: caseName.replace(/[^A-Za-z0-9_]/g, "_") || "Company_collection",
-      path: `C:\\Cases\\${caseName.replace(/[^A-Za-z0-9_]/g, "_") || "Company_collection"}`,
-      totalFiles: 5,
-      selectedFiles: 3,
-      totalFolders: 2,
-      selectedFolders: 1,
-    },
-  ];
+  // Extract all distinct script names in runHistory
+  const allScriptNames = useMemo(() => {
+    const set = new Set<string>();
+    runHistory.forEach((r) => {
+      if (r.scriptName) set.add(r.scriptName);
+    });
+    return Array.from(set);
+  }, [runHistory]);
 
-  const filesInFinance: EvidenceFileItem[] = [
-    { id: "f-1", name: "q3_report.pdf", path: "Documents/Finance/q3_report.pdf", folder: "Finance", isContributory: false },
-    { id: "f-2", name: "invoice.zip", path: "Documents/Finance/invoice.zip", folder: "Finance", isContributory: true },
-  ];
+  const activeScriptName = useMemo(() => {
+    if (activeDocPath) {
+      return activeDocPath.split(/[\\/]/).pop() || null;
+    }
+    return response?.context?.script_name || null;
+  }, [activeDocPath, response]);
 
-  const filesInDownloads: EvidenceFileItem[] = [
-    { id: "f-3", name: "update.exe", path: "Downloads/update.exe", folder: "Downloads", isContributory: true },
-    { id: "f-4", name: "payload.ps1", path: "Downloads/payload.ps1", folder: "Downloads", isContributory: true },
-    { id: "f-5", name: "readme.txt", path: "Downloads/readme.txt", folder: "Downloads", isContributory: true },
-    { id: "f-6", name: "image.jpg", path: "Downloads/image.jpg", folder: "Downloads", isContributory: false },
-    { id: "f-7", name: "archive.bin", path: "Downloads/archive.bin", folder: "Downloads", isContributory: false },
-  ];
+  // 1. Group runs by scriptName
+  const allUniqueScripts = useMemo(() => {
+    const map = new Map<string, { scriptName: string; runsCount: number; stepsCount: number; lastStatus: string; docPath: string }>();
+    runHistory.forEach((r) => {
+      const existing = map.get(r.scriptName);
+      if (!existing) {
+        map.set(r.scriptName, {
+          scriptName: r.scriptName,
+          runsCount: 1,
+          stepsCount: r.response.steps?.length || 0,
+          lastStatus: r.response.status || "completed",
+          docPath: r.docPath,
+        });
+      } else {
+        existing.runsCount += 1;
+        existing.stepsCount = r.response.steps?.length || existing.stepsCount;
+        existing.lastStatus = r.response.status || existing.lastStatus;
+      }
+    });
+    return Array.from(map.values());
+  }, [runHistory]);
 
-  // Script nodes in center column
-  const scripts = [
-    { id: "script-threat", name: "script_02_threat_hunter.jocky", blocks: 7, isActive: true },
-    { id: "script-investigation", name: "investigation.jocky", blocks: 8, isActive: false },
-    { id: "script-analysis", name: "script_03_full_analysis.jocky", blocks: 9, isActive: false },
-  ];
+  // Apply filterMode to uniqueScripts
+  const uniqueScripts = useMemo(() => {
+    if (filterMode === "all") return allUniqueScripts;
+    if (filterMode === "recent") {
+      if (runHistory.length === 0) return [];
+      const latest = runHistory[runHistory.length - 1].scriptName;
+      return allUniqueScripts.filter((s) => s.scriptName === latest);
+    }
+    if (filterMode === "active") {
+      if (!activeScriptName) return allUniqueScripts;
+      return allUniqueScripts.filter((s) => s.scriptName === activeScriptName);
+    }
+    if (filterMode.startsWith("script:")) {
+      const target = filterMode.slice("script:".length);
+      return allUniqueScripts.filter((s) => s.scriptName === target);
+    }
+    return allUniqueScripts;
+  }, [allUniqueScripts, filterMode, runHistory, activeScriptName]);
 
-  // Export nodes in right column
-  const exportsList: ExportItem[] = [
-    {
-      id: "exp-triage",
-      name: "triage_metadata.json",
-      type: "JSON Report",
-      path: "./Outputs/triage_metadata.json",
-      scriptId: "script-threat",
-      format: "JSON",
-      size: "248 KB",
-      generatedAt: "Today 13:10",
-      description: "Metadata of suspicious files",
-      inputSources: [
-        {
-          folder: "Documents/Finance",
-          items: [
-            { name: "invoice.zip", checked: true },
-            { name: "update.exe", checked: true },
-            { name: "payload.ps1", checked: true },
-            { name: "readme.txt", checked: false },
-          ],
-        },
-      ],
-      downstreamCount: 2,
-    },
-    {
-      id: "exp-suspicious",
-      name: "suspicious_files.csv",
-      type: "CSV",
-      path: "./Outputs/suspicious_files.csv",
-      scriptId: "script-threat",
-      format: "CSV",
-      size: "12 KB",
-      generatedAt: "Today 13:10",
-      description: "Filtered artifact inventory",
-      inputSources: [],
-      downstreamCount: 1,
-    },
-    {
-      id: "exp-timeline",
-      name: "timeline_events.json",
-      type: "JSON",
-      path: "./Outputs/timeline_events.json",
-      scriptId: "script-threat",
-      format: "JSON",
-      size: "95 KB",
-      generatedAt: "Today 13:10",
-      description: "Extracted event stream",
-      inputSources: [],
-      downstreamCount: 1,
-    },
-    {
-      id: "exp-findings",
-      name: "findings.json",
-      type: "JSON",
-      path: "./Outputs/findings.json",
-      scriptId: "script-investigation",
-      format: "JSON",
-      size: "42 KB",
-      generatedAt: "Today 14:32",
-      description: "Correlated findings and threat indicators",
-      inputSources: [],
-      downstreamCount: 0,
-    },
-    {
-      id: "exp-network",
-      name: "network_summary.json",
-      type: "JSON",
-      path: "./Outputs/network_summary.json",
-      scriptId: "script-analysis",
-      format: "JSON",
-      size: "310 KB",
-      generatedAt: "Today 14:45",
-      description: "PCAP session conversation breakdown",
-      inputSources: [],
-      downstreamCount: 1,
-    },
-    {
-      id: "exp-report",
-      name: "case_report.html",
-      type: "HTML",
-      path: "./Outputs/case_report.html",
-      scriptId: "script-analysis",
-      format: "HTML",
-      size: "512 KB",
-      generatedAt: "Today 14:45",
-      description: "Final forensic executive investigation brief",
-      inputSources: [],
-      downstreamCount: 0,
-    },
-  ];
+  const allowedScriptNames = useMemo(() => new Set(uniqueScripts.map((s) => s.scriptName)), [uniqueScripts]);
 
-  const selectedExport = exportsList.find((e) => e.id === selectedExportId) || exportsList[0];
+  // 2. Dynamically extract export artifacts across runs
+  const dynamicExports = useMemo<DynamicExportItem[]>(() => {
+    const list: DynamicExportItem[] = [];
+    runHistory.forEach((run, rIdx) => {
+      if (!allowedScriptNames.has(run.scriptName)) return;
+
+      const results = run.response?.results || [];
+      results.forEach((res, resIdx) => {
+        if (res.type === "Export" && res.value && typeof res.value === "object") {
+          const v = res.value as Record<string, any>;
+          const dest = v.relative_path || v.destination || "export.json";
+          const ext = dest.split(".").pop()?.toUpperCase() || "JSON";
+          const sizeKb = v.size_bytes !== undefined ? (v.size_bytes / 1024).toFixed(1) + " KB" : "Unknown";
+
+          list.push({
+            id: `exp-${rIdx}-${resIdx}`,
+            name: dest.split(/[\\/]/).pop() || dest,
+            type: `${ext} Deliverable`,
+            path: v.file_path || v.destination || dest,
+            scriptName: run.scriptName,
+            format: ext,
+            size: sizeKb,
+            generatedAt: new Date().toLocaleTimeString(),
+            description: `Forensic export artifact produced by procedure ${run.scriptName}`,
+            recordsCount: v.records_count || 1,
+            sha256: v.sha256,
+            previewData: v.preview,
+            inputSources: [],
+          });
+        }
+      });
+    });
+    return list;
+  }, [runHistory, allowedScriptNames]);
+
+  // 3. Dynamically extract evidence files from results or tree
+  const dynamicFiles = useMemo<DynamicEvidenceFile[]>(() => {
+    const filesMap = new Map<string, DynamicEvidenceFile>();
+
+    // Check ArtifactCollection results in runHistory
+    runHistory.forEach((run) => {
+      if (!allowedScriptNames.has(run.scriptName)) return;
+      const results = run.response?.results || [];
+      results.forEach((res) => {
+        if (res.type === "ArtifactCollection" && Array.isArray(res.value)) {
+          res.value.forEach((art: any, aIdx: number) => {
+            const relPath = art.relative_path || art.name || `file_${aIdx}`;
+            const cleanPath = relPath.replace(/\\/g, "/");
+            const parts = cleanPath.split("/");
+            const fileName = parts.pop() || cleanPath;
+            const folder = parts.length > 0 ? parts.join("/") : "Evidence";
+
+            filesMap.set(cleanPath, {
+              id: `evid-f-${cleanPath}`,
+              name: fileName,
+              path: cleanPath,
+              folder: folder,
+              size: art.size_bytes,
+              isContributory: true,
+              scriptName: run.scriptName,
+            });
+          });
+        }
+      });
+    });
+
+    // If no artifact collection produced, look at tree for evidence files
+    if (filesMap.size === 0 && tree.length > 0) {
+      const walk = (nodes: FsNode[], parentFolder = "") => {
+        nodes.forEach((n) => {
+          if (n.kind === "file") {
+            const cleanPath = n.path.replace(/\\/g, "/");
+            const folder = parentFolder || "Evidence";
+            filesMap.set(cleanPath, {
+              id: `evid-tree-${cleanPath}`,
+              name: n.name,
+              path: cleanPath,
+              folder: folder,
+              isContributory: true,
+            });
+          } else if (n.kind === "directory" && n.children) {
+            walk(n.children, parentFolder ? `${parentFolder}/${n.name}` : n.name);
+          }
+        });
+      };
+      walk(tree);
+    }
+
+    return Array.from(filesMap.values());
+  }, [runHistory, allowedScriptNames, tree]);
+
+  // Group dynamic files by folder
+  const foldersMap = useMemo(() => {
+    const map = new Map<string, DynamicEvidenceFile[]>();
+    dynamicFiles.forEach((f) => {
+      const list = map.get(f.folder) || [];
+      list.push(f);
+      map.set(f.folder, list);
+    });
+    return map;
+  }, [dynamicFiles]);
+
+  const folderNames = Array.from(foldersMap.keys());
+
+  // Automatically select first export if none selected and exports exist
+  const selectedExport = useMemo(() => {
+    if (!dynamicExports.length) return null;
+    return dynamicExports.find((e) => e.id === selectedExportId) || dynamicExports[0];
+  }, [dynamicExports, selectedExportId]);
+
+  // If runHistory is completely empty, show clean empty state
+  if (runHistory.length === 0) {
+    return (
+      <div className="provenance-view-container" style={{ display: "flex", flexDirection: "column", height: "100%", width: "100%", background: "#090d14", color: "#cbd5e1" }}>
+        <div className="provenance-topbar" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 20px", background: "#0b1118", borderBottom: "1px solid #1e293b" }}>
+          <div className="topbar-left" style={{ display: "flex", alignItems: "center", gap: "16px" }}>
+            <span style={{ fontSize: "11px", fontWeight: 600, color: "#38bdf8" }}>
+              <Icon name="tree" /> Input-Output Lineage
+            </span>
+          </div>
+        </div>
+
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "80px 20px", textAlign: "center" }}>
+          <div style={{ fontSize: "42px", color: "#38bdf8", marginBottom: "16px" }}>
+            <Icon name="tree" />
+          </div>
+          <h3 style={{ fontSize: "17px", fontWeight: 600, color: "#f8fafc", margin: "0 0 8px" }}>
+            No Evidence Lineage Available
+          </h3>
+          <p style={{ fontSize: "12px", color: "#94a3b8", maxWidth: "460px", lineHeight: 1.6, margin: 0 }}>
+            Execute one or more JOCKY procedure scripts from the editor to automatically map input evidence sources, active procedures, and generated export artifacts.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Layout coordinates for SVG wires
+  // Column 1 (Evidence): Left = 24px, Width = 260px -> Right port is at X = 284px, Y = 68px
+  const evidPortX = 284;
+  const evidPortY = 68;
+
+  // Column 2 (Procedures): Left = 344px, Width = 200px
+  // InPort X = 344px, OutPort X = 544px
+  // Card index i center Y = 28px (header) + i * 72px + 28px = 56 + i * 72
+  const getScriptY = (sIdx: number) => 56 + sIdx * 72;
+
+  // Column 3 (Exports): Left = 604px, Width = 220px
+  // InPort X = 604px
+  // Card index j center Y = 28px (header) + j * 72px + 28px = 56 + j * 72
+  const getExportY = (eIdx: number) => 56 + eIdx * 72;
 
   return (
     <div className="provenance-view-container">
@@ -194,10 +277,31 @@ export function ProvenanceView({
         <div className="topbar-left">
           <label className="view-dropdown-label">
             <span>View:</span>
-            <select className="prov-select" defaultValue="all">
-              <option value="all">All Scripts (Unified)</option>
-              <option value="active">Active Script Only</option>
-              <option value="recent">Most Recent Run</option>
+            <select
+              className="prov-select"
+              value={filterMode}
+              onChange={(e) => setFilterMode(e.target.value)}
+            >
+              <option value="all">All Scripts (Unified · {allUniqueScripts.length})</option>
+              {runHistory.length > 0 && (
+                <option value="recent">
+                  Recent: {runHistory[runHistory.length - 1].scriptName}
+                </option>
+              )}
+              {activeScriptName && (
+                <option value="active">
+                  Active Editor: {activeScriptName}
+                </option>
+              )}
+              {allScriptNames.length > 1 && (
+                <optgroup label="Per-Script Isolation">
+                  {allScriptNames.map((name) => (
+                    <option key={name} value={`script:${name}`}>
+                      Script: {name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           </label>
 
@@ -216,22 +320,19 @@ export function ProvenanceView({
               checked={showFileNodes}
               onChange={(e) => setShowFileNodes(e.target.checked)}
             />
-            Show File/Folder Nodes
+            Show File Nodes
           </label>
         </div>
 
         <div className="prov-legend-chips">
           <span className="prov-chip cyan">
-            <span className="dot cyan" /> Evidence (Input)
+            <span className="dot cyan" /> Evidence ({dynamicFiles.length})
           </span>
           <span className="prov-chip purple">
-            <span className="dot purple" /> Script
-          </span>
-          <span className="prov-chip orange">
-            <span className="dot orange" /> Intermediate
+            <span className="dot purple" /> Procedures ({uniqueScripts.length})
           </span>
           <span className="prov-chip green">
-            <span className="dot green" /> Export (Output)
+            <span className="dot green" /> Exports ({dynamicExports.length})
           </span>
         </div>
 
@@ -239,240 +340,232 @@ export function ProvenanceView({
           <button className="prov-btn secondary" onClick={() => setZoomLevel(100)}>
             Fit to View
           </button>
-          <button className="prov-btn icon" title="Maximize">
-            <Icon name="maximize" />
-          </button>
         </div>
       </div>
 
       {/* Main Mapping Area + Selected Item Drawer */}
-      <div className="provenance-main-split">
+      <div className="provenance-main-split" style={{ display: "flex", flex: 1, overflow: "hidden", position: "relative" }}>
         {/* Graph Canvas Area */}
-        <div className="provenance-canvas" style={{ zoom: `${zoomLevel}%` }}>
-          <div className="canvas-header-title">
-            <h2>Input-Output Mapping</h2>
-            <p>Data flow across all JOCKY scripts in the current workspace</p>
+        <div className="provenance-canvas" style={{ zoom: `${zoomLevel}%`, flex: 1, overflow: "auto", position: "relative", padding: "24px" }}>
+          <div className="canvas-header-title" style={{ marginBottom: "20px" }}>
+            <h2 style={{ fontSize: "16px", color: "#f8fafc", margin: "0 0 4px" }}>Evidence Provenance & Data Flow</h2>
+            <p style={{ fontSize: "11px", color: "#94a3b8", margin: 0 }}>
+              Lineage tracing across {filterMode === "all" ? "all procedures" : filterMode.replace("script:", "")} in <strong>{caseName}</strong>
+            </p>
           </div>
 
-          <div className="mapping-grid">
+          <div className="mapping-grid" style={{ display: "flex", gap: "60px", position: "relative", minHeight: "520px" }}>
             {/* Column 1: Evidence Hierarchy */}
-            <div className="mapping-column evidence-column">
-              {evidenceSources.map((src) => (
-                <div key={src.id} className="evidence-root-card">
-                  <div className="evidence-card-header">
-                    <div className="card-icon-title">
-                      <div className="evidence-folder-icon">
-                        <Icon name="folder" />
-                      </div>
-                      <div>
-                        <strong>{src.name}</strong>
-                        <span className="card-sub">{src.path}</span>
-                      </div>
+            <div className="mapping-column evidence-column" style={{ width: "260px", flexShrink: 0, zIndex: 2 }}>
+              <div className="evidence-root-card" style={{ background: "#0d1520", border: "1px solid #1e293b", borderRadius: "8px", padding: "12px", marginBottom: "12px", position: "relative" }}>
+                <div className="evidence-card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
+                  <div className="card-icon-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <div className="evidence-folder-icon" style={{ color: "#38bdf8" }}>
+                      <Icon name="folder" />
                     </div>
-                    <div className="header-badges">
-                      <span className="count-pill cyan">
-                        {src.selectedFiles}/{src.totalFiles} files
-                      </span>
-                      <span className="count-pill blue">
-                        {src.selectedFolders}/{src.totalFolders} folders
-                      </span>
+                    <div>
+                      <strong style={{ fontSize: "12px", color: "#f1f5f9" }}>{caseName.replace(/[^A-Za-z0-9_]/g, "_")}</strong>
+                      <span className="card-sub" style={{ display: "block", fontSize: "10px", color: "#64748b" }}>Case Evidence</span>
                     </div>
                   </div>
+                  <div className="header-badges" style={{ display: "flex", gap: "4px" }}>
+                    <span className="count-pill cyan" style={{ fontSize: "9px", background: "rgba(56,189,248,0.15)", color: "#38bdf8", padding: "2px 6px", borderRadius: "4px" }}>
+                      {dynamicFiles.length} files
+                    </span>
+                  </div>
+                </div>
 
-                  {/* Nested Evidence Folders */}
+                {/* Dynamic Evidence Folders & Files */}
+                {showFileNodes && (
                   <div className="evidence-tree-content">
-                    {/* Documents Folder */}
-                    <div className="tree-folder-group">
-                      <div
-                        className="folder-row"
-                        onClick={() => toggleFolder("Documents")}
-                      >
-                        <span className="twisty">
-                          {expandedFolders["Documents"] ? "⌄" : "›"}
-                        </span>
-                        <Icon name="folder" />
-                        <span className="folder-name">Documents (1/2)</span>
-                      </div>
+                    {folderNames.map((folderName) => {
+                      const files = foldersMap.get(folderName) || [];
+                      const isExpanded = expandedFolders[folderName] ?? true;
 
-                      {expandedFolders["Documents"] && (
-                        <div className="tree-subfolder-group">
+                      return (
+                        <div key={folderName} className="tree-folder-group" style={{ marginBottom: "6px" }}>
                           <div
-                            className="folder-row sub"
-                            onClick={() => toggleFolder("Finance")}
+                            className="folder-row"
+                            onClick={() => toggleFolder(folderName)}
+                            style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "#cbd5e1", cursor: "pointer", padding: "4px 6px", borderRadius: "4px" }}
                           >
-                            <span className="twisty">
-                              {expandedFolders["Finance"] ? "⌄" : "›"}
-                            </span>
+                            <span className="twisty">{isExpanded ? "⌄" : "›"}</span>
                             <Icon name="folder" />
-                            <span className="folder-name">Finance (1/2)</span>
+                            <span className="folder-name" style={{ fontWeight: 500 }}>{folderName} ({files.length})</span>
                           </div>
 
-                          {expandedFolders["Finance"] && (
-                            <div className="files-list">
-                              {filesInFinance.map((f) => (
+                          {isExpanded && (
+                            <div className="files-list" style={{ paddingLeft: "16px", marginTop: "4px" }}>
+                              {files.map((f) => (
                                 <div
                                   key={f.id}
-                                  className={`file-item-row ${
-                                    f.isContributory && selectedExportId === "exp-triage"
-                                      ? "contributory-active"
-                                      : ""
-                                  }`}
+                                  className={`file-item-row ${f.isContributory ? "contributory-active" : ""}`}
+                                  style={{
+                                    display: "flex",
+                                    alignItems: "center",
+                                    gap: "6px",
+                                    fontSize: "10px",
+                                    color: "#94a3b8",
+                                    padding: "3px 6px",
+                                    borderRadius: "3px",
+                                  }}
+                                  title={f.path}
                                 >
-                                  <span className="file-check-icon">
-                                    {f.isContributory && selectedExportId === "exp-triage" ? (
-                                      <span className="check-badge">✔</span>
-                                    ) : (
-                                      <Icon name="file" />
-                                    )}
+                                  <span className="file-check-icon" style={{ color: "#38bdf8" }}>
+                                    <Icon name="file" />
                                   </span>
-                                  <span className="file-name">{f.name}</span>
+                                  <span className="file-name" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {f.name}
+                                  </span>
                                 </div>
                               ))}
                             </div>
                           )}
-
-                          <div className="folder-row sub collapsed">
-                            <span className="twisty">›</span>
-                            <Icon name="folder" />
-                            <span className="folder-name">HR</span>
-                          </div>
                         </div>
-                      )}
-                    </div>
-
-                    {/* Downloads Folder */}
-                    <div className="tree-folder-group">
-                      <div
-                        className="folder-row"
-                        onClick={() => toggleFolder("Downloads")}
-                      >
-                        <span className="twisty">
-                          {expandedFolders["Downloads"] ? "⌄" : "›"}
-                        </span>
-                        <Icon name="folder" />
-                        <span className="folder-name">Downloads (3/5)</span>
-                      </div>
-
-                      {expandedFolders["Downloads"] && (
-                        <div className="files-list">
-                          {filesInDownloads.map((f) => (
-                            <div
-                              key={f.id}
-                              className={`file-item-row ${
-                                f.isContributory && selectedExportId === "exp-triage"
-                                  ? "contributory-active"
-                                  : ""
-                              }`}
-                            >
-                              <span className="file-check-icon">
-                                {f.isContributory && selectedExportId === "exp-triage" ? (
-                                  <span className="check-badge">✔</span>
-                                ) : (
-                                  <Icon name="file" />
-                                )}
-                              </span>
-                              <span className="file-name">{f.name}</span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Logs & Browser Collapsed */}
-                    <div className="tree-folder-group">
-                      <div className="folder-row collapsed">
-                        <span className="twisty">›</span>
-                        <Icon name="folder" />
-                        <span className="folder-name">Logs (0/3)</span>
-                      </div>
-                      <div className="folder-row collapsed">
-                        <span className="twisty">›</span>
-                        <Icon name="folder" />
-                        <span className="folder-name">Browser (0/4)</span>
-                      </div>
-                    </div>
+                      );
+                    })}
                   </div>
-                </div>
-              ))}
-
-              {/* Other Evidence Sources */}
-              <div className="evidence-secondary-card">
-                <div className="sec-icon"><Icon name="folder" /></div>
-                <div>
-                  <strong>Memory_Dump</strong>
-                  <small>D:\Forensics\Memory</small>
-                </div>
-              </div>
-
-              <div className="evidence-secondary-card">
-                <div className="sec-icon"><Icon name="folder" /></div>
-                <div>
-                  <strong>Network_Capture</strong>
-                  <small>D:\Forensics\PCAP</small>
-                </div>
+                )}
               </div>
             </div>
 
             {/* SVG Connecting Flow Lines between Column 1 -> 2 -> 3 */}
-            <svg className="flow-lines-overlay" aria-hidden="true">
-              {/* Contributory flow to active script */}
-              <path
-                d="M 270 190 C 330 190, 340 160, 395 160"
-                className="flow-curve-selected"
-              />
-              <path
-                d="M 270 295 C 330 295, 340 180, 395 180"
-                className="flow-curve-selected"
-              />
-              {/* Connecting from script-threat to selected export */}
-              <path
-                d="M 585 160 C 640 160, 650 90, 695 90"
-                className="flow-curve-selected"
-              />
-              {/* Other flows to other exports */}
-              <path
-                d="M 585 170 C 630 170, 650 170, 695 170"
-                className="flow-curve-other"
-              />
-              <path
-                d="M 585 180 C 630 180, 650 240, 695 240"
-                className="flow-curve-other"
-              />
-              <path
-                d="M 585 300 C 630 300, 650 310, 695 310"
-                className="flow-curve-unrelated"
-              />
-              <path
-                d="M 585 410 C 630 410, 650 380, 695 380"
-                className="flow-curve-unrelated"
-              />
-              <path
-                d="M 585 420 C 630 420, 650 450, 695 450"
-                className="flow-curve-unrelated"
-              />
+            <svg
+              className="flow-lines-overlay"
+              aria-hidden="true"
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                height: "100%",
+                pointerEvents: "none",
+                zIndex: 1,
+              }}
+            >
+              {/* Lines from Evidence Root -> Procedures */}
+              {uniqueScripts.map((sc, sIdx) => {
+                const isSelectedScript = selectedScriptId === sc.scriptName || selectedExport?.scriptName === sc.scriptName;
+                const x1 = evidPortX;
+                const y1 = evidPortY;
+                const x2 = 344; // Left of Column 2
+                const y2 = getScriptY(sIdx);
+                const dx = x2 - x1;
+                const cx1 = x1 + dx * 0.5;
+                const cx2 = x2 - dx * 0.5;
+
+                return (
+                  <g key={`curve-evid-script-${sc.scriptName}`}>
+                    {/* Shadow / glow path if selected */}
+                    {isSelectedScript && (
+                      <path
+                        d={`M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`}
+                        fill="none"
+                        stroke="#38bdf8"
+                        strokeWidth={6}
+                        strokeOpacity={0.25}
+                      />
+                    )}
+                    <path
+                      d={`M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`}
+                      stroke={isSelectedScript ? "#38bdf8" : "#334155"}
+                      strokeWidth={isSelectedScript ? 2.5 : 1.5}
+                      strokeOpacity={isSelectedScript ? 1 : 0.45}
+                      fill="none"
+                    />
+                    {/* Port indicator dots */}
+                    <circle cx={x1} cy={y1} r={3} fill="#38bdf8" />
+                    <circle cx={x2} cy={y2} r={3} fill="#818cf8" />
+                  </g>
+                );
+              })}
+
+              {/* Lines from Procedures -> Export Deliverables */}
+              {dynamicExports.map((exp, eIdx) => {
+                const sIdx = uniqueScripts.findIndex((s) => s.scriptName === exp.scriptName);
+                if (sIdx < 0) return null;
+
+                const x1 = 544; // Right of Column 2
+                const y1 = getScriptY(sIdx);
+                const x2 = 604; // Left of Column 3
+                const y2 = getExportY(eIdx);
+                const dx = x2 - x1;
+                const cx1 = x1 + dx * 0.5;
+                const cx2 = x2 - dx * 0.5;
+
+                const isSelected = selectedExport?.id === exp.id;
+                const isSelectedParent = selectedScriptId === exp.scriptName;
+
+                const strokeColor = isSelected ? "#10b981" : isSelectedParent ? "#38bdf8" : "#334155";
+                const strokeOpacity = isSelected ? 1 : isSelectedParent ? 0.8 : 0.35;
+                const strokeW = isSelected ? 3 : isSelectedParent ? 2 : 1.5;
+
+                return (
+                  <g key={`curve-script-export-${exp.id}`}>
+                    {isSelected && (
+                      <path
+                        d={`M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`}
+                        fill="none"
+                        stroke="#10b981"
+                        strokeWidth={7}
+                        strokeOpacity={0.28}
+                      />
+                    )}
+                    <path
+                      d={`M ${x1} ${y1} C ${cx1} ${y1}, ${cx2} ${y2}, ${x2} ${y2}`}
+                      stroke={strokeColor}
+                      strokeWidth={strokeW}
+                      strokeOpacity={strokeOpacity}
+                      fill="none"
+                    />
+                    <circle cx={x1} cy={y1} r={3} fill="#818cf8" />
+                    <circle cx={x2} cy={y2} r={3} fill="#10b981" />
+                  </g>
+                );
+              })}
             </svg>
 
             {/* Column 2: Script Cards */}
-            <div className="mapping-column scripts-column">
-              <div className="flow-label-badge">
-                <span>3 files</span>
-                <small>1 folder</small>
+            <div className="mapping-column scripts-column" style={{ width: "200px", flexShrink: 0, zIndex: 2, display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div style={{ fontSize: "10px", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.05em", color: "#818cf8", height: "16px", lineHeight: "16px" }}>
+                Active Procedures ({uniqueScripts.length})
               </div>
 
-              {scripts.map((sc) => {
-                const isSelected = sc.id === "script-threat";
+              {uniqueScripts.map((sc) => {
+                const isSelected = selectedScriptId === sc.scriptName || selectedExport?.scriptName === sc.scriptName;
                 return (
                   <div
-                    key={sc.id}
+                    key={sc.scriptName}
                     className={`script-flow-card ${isSelected ? "selected-script" : ""}`}
-                    onClick={() => {}}
+                    onClick={() => {
+                      setSelectedScriptId(sc.scriptName);
+                      if (onSelectDoc) onSelectDoc(sc.scriptName);
+                    }}
+                    style={{
+                      background: isSelected ? "rgba(129, 140, 248, 0.14)" : "#0d1520",
+                      border: `1px solid ${isSelected ? "#818cf8" : "#1e293b"}`,
+                      borderRadius: "6px",
+                      padding: "10px 12px",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "10px",
+                      height: "56px",
+                      boxSizing: "border-box",
+                      transition: "all 0.15s ease",
+                      boxShadow: isSelected ? "0 0 14px rgba(129, 140, 248, 0.25)" : "none",
+                    }}
                   >
-                    <div className="script-card-icon">
+                    <div className="script-card-icon" style={{ color: "#818cf8" }}>
                       <Icon name="bolt" />
                     </div>
-                    <div className="script-card-content">
-                      <strong>{sc.name}</strong>
-                      <span>{sc.blocks} blocks</span>
+                    <div className="script-card-content" style={{ flex: 1, minWidth: 0 }}>
+                      <strong style={{ display: "block", fontSize: "11px", color: "#f8fafc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {sc.scriptName}
+                      </strong>
+                      <span style={{ fontSize: "10px", color: "#64748b" }}>
+                        {sc.stepsCount} steps · {sc.runsCount} run{sc.runsCount > 1 ? "s" : ""}
+                      </span>
                     </div>
                   </div>
                 );
@@ -480,75 +573,84 @@ export function ProvenanceView({
             </div>
 
             {/* Column 3: Export Artifacts */}
-            <div className="mapping-column exports-column">
-              {exportsList.map((exp) => {
-                const isSelected = exp.id === selectedExportId;
-                return (
-                  <div
-                    key={exp.id}
-                    className={`export-flow-card ${isSelected ? "selected-export" : ""}`}
-                    onClick={() => setSelectedExportId(exp.id)}
-                  >
-                    <div className="export-card-icon">
-                      <Icon name="file" />
-                    </div>
-                    <div className="export-card-content">
-                      <strong>{exp.name}</strong>
-                      <span>{exp.type}</span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Bottom Bar: Legend, Stats & Minimap Controls */}
-          <div className="provenance-bottom-bar">
-            <div className="bottom-legend">
-              <span className="legend-line purple">── Selected data flow</span>
-              <span className="legend-line slate">── Other data flows</span>
-              <span className="legend-line dashed">┈┈ Unrelated</span>
-            </div>
-
-            <div className="bottom-summary">
-              <span>3/5 files selected</span>
-              <span className="sep">|</span>
-              <span>1/2 folders selected</span>
-            </div>
-
-            <div className="bottom-zoom-controls">
-              <div className="canvas-minimap-preview">
-                <div className="mini-viewport-box" />
+            <div className="mapping-column exports-column" style={{ width: "220px", flexShrink: 0, zIndex: 2, display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div style={{ fontSize: "10px", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.05em", color: "#34d399", height: "16px", lineHeight: "16px" }}>
+                Export Deliverables ({dynamicExports.length})
               </div>
-              <button
-                className="zoom-btn"
-                onClick={() => setZoomLevel((z) => Math.max(z - 10, 50))}
-              >
-                -
-              </button>
-              <span className="zoom-text">{zoomLevel}%</span>
-              <button
-                className="zoom-btn"
-                onClick={() => setZoomLevel((z) => Math.min(z + 10, 150))}
-              >
-                +
-              </button>
+
+              {dynamicExports.length === 0 ? (
+                <div style={{ padding: "16px", background: "#0d1520", border: "1px dashed #1e293b", borderRadius: "6px", color: "#64748b", fontSize: "11px" }}>
+                  No export operations recorded for this view.
+                </div>
+              ) : (
+                dynamicExports.map((exp) => {
+                  const isSelected = selectedExport?.id === exp.id;
+                  return (
+                    <div
+                      key={exp.id}
+                      className={`export-flow-card ${isSelected ? "selected-export" : ""}`}
+                      onClick={() => {
+                        setSelectedExportId(exp.id);
+                        setSelectedScriptId(exp.scriptName);
+                      }}
+                      style={{
+                        background: isSelected ? "rgba(16, 185, 129, 0.14)" : "#0d1520",
+                        border: `1px solid ${isSelected ? "#10b981" : "#1e293b"}`,
+                        borderRadius: "6px",
+                        padding: "10px 12px",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "10px",
+                        height: "56px",
+                        boxSizing: "border-box",
+                        transition: "all 0.15s ease",
+                        boxShadow: isSelected ? "0 0 14px rgba(16, 185, 129, 0.25)" : "none",
+                      }}
+                    >
+                      <div className="export-card-icon" style={{ color: "#10b981" }}>
+                        <Icon name="file" />
+                      </div>
+                      <div className="export-card-content" style={{ flex: 1, minWidth: 0 }}>
+                        <strong style={{ display: "block", fontSize: "11px", color: "#f8fafc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {exp.name}
+                        </strong>
+                        <span style={{ fontSize: "10px", color: "#64748b" }}>
+                          {exp.type} · {exp.size}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
             </div>
           </div>
         </div>
 
-        {/* Column 4 / Right Panel: Selected Item Inspection Drawer */}
+        {/* Right-Side Item Inspector Drawer */}
         {selectedExport && (
-          <aside className="selected-item-drawer">
-            <header className="drawer-header">
-              <div className="drawer-title-group">
-                <div className="drawer-icon-box">
+          <aside
+            className="provenance-details-drawer"
+            style={{
+              width: "360px",
+              background: "#0b1118",
+              borderLeft: "1px solid #1e293b",
+              display: "flex",
+              flexDirection: "column",
+              height: "100%",
+              zIndex: 10,
+              boxShadow: "-4px 0 20px rgba(0,0,0,0.5)",
+            }}
+          >
+            <header className="drawer-header" style={{ padding: "14px 16px", borderBottom: "1px solid #1e293b", display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+              <div style={{ display: "flex", gap: "10px" }}>
+                <div style={{ color: "#10b981", fontSize: "18px" }}>
                   <Icon name="file" />
                 </div>
                 <div>
-                  <h3>{selectedExport.name}</h3>
-                  <span className="drawer-sub">{selectedExport.type}</span>
-                  <div className="drawer-path">{selectedExport.path}</div>
+                  <strong style={{ display: "block", fontSize: "12px", color: "#f8fafc" }}>{selectedExport.name}</strong>
+                  <span style={{ fontSize: "10px", color: "#64748b" }}>{selectedExport.type}</span>
+                  <div style={{ fontSize: "9px", color: "#38bdf8", marginTop: "2px", wordBreak: "break-all" }}>{selectedExport.path}</div>
                 </div>
               </div>
               <button
@@ -561,135 +663,96 @@ export function ProvenanceView({
             </header>
 
             {/* Tabs: Details / Lineage / Preview */}
-            <div className="drawer-tabs">
+            <div className="drawer-tabs" style={{ display: "flex", borderBottom: "1px solid #1e293b", background: "#090d14" }}>
               <button
                 className={`drawer-tab ${activeTab === "details" ? "active" : ""}`}
                 onClick={() => setActiveTab("details")}
+                style={{ flex: 1, padding: "8px 0", background: "transparent", border: 0, borderBottom: activeTab === "details" ? "2px solid #38bdf8" : "2px solid transparent", color: activeTab === "details" ? "#38bdf8" : "#64748b", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
               >
                 Details
               </button>
               <button
                 className={`drawer-tab ${activeTab === "lineage" ? "active" : ""}`}
                 onClick={() => setActiveTab("lineage")}
+                style={{ flex: 1, padding: "8px 0", background: "transparent", border: 0, borderBottom: activeTab === "lineage" ? "2px solid #38bdf8" : "2px solid transparent", color: activeTab === "lineage" ? "#38bdf8" : "#64748b", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
               >
                 Lineage
               </button>
               <button
                 className={`drawer-tab ${activeTab === "preview" ? "active" : ""}`}
                 onClick={() => setActiveTab("preview")}
+                style={{ flex: 1, padding: "8px 0", background: "transparent", border: 0, borderBottom: activeTab === "preview" ? "2px solid #38bdf8" : "2px solid transparent", color: activeTab === "preview" ? "#38bdf8" : "#64748b", fontSize: "11px", fontWeight: 600, cursor: "pointer" }}
               >
                 Preview
               </button>
             </div>
 
-            <div className="drawer-body">
+            <div className="drawer-body" style={{ flex: 1, overflowY: "auto", padding: "16px" }}>
               {activeTab === "details" && (
-                <div className="tab-details-content">
-                  {/* Metadata Table */}
-                  <div className="metadata-kv-list">
-                    <div className="kv-row">
-                      <span className="k">Type</span>
-                      <span className="v">Export</span>
+                <div className="details-section" style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                  <div className="detail-meta-table" style={{ background: "#090d14", border: "1px solid #1e293b", borderRadius: "6px", padding: "10px", fontSize: "11px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                      <span style={{ color: "#64748b" }}>Format</span>
+                      <strong style={{ color: "#f8fafc" }}>{selectedExport.format}</strong>
                     </div>
-                    <div className="kv-row">
-                      <span className="k">Format</span>
-                      <span className="v">{selectedExport.format}</span>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                      <span style={{ color: "#64748b" }}>Created By</span>
+                      <strong style={{ color: "#818cf8" }}>{selectedExport.scriptName}</strong>
                     </div>
-                    <div className="kv-row">
-                      <span className="k">Created by</span>
-                      <span className="v code-hl">{selectedExport.scriptId}.jocky</span>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                      <span style={{ color: "#64748b" }}>Records</span>
+                      <strong style={{ color: "#f8fafc" }}>{selectedExport.recordsCount}</strong>
                     </div>
-                    <div className="kv-row">
-                      <span className="k">Generated at</span>
-                      <span className="v">{selectedExport.generatedAt}</span>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
+                      <span style={{ color: "#64748b" }}>Size</span>
+                      <strong style={{ color: "#f8fafc" }}>{selectedExport.size}</strong>
                     </div>
-                    <div className="kv-row">
-                      <span className="k">Size</span>
-                      <span className="v">{selectedExport.size}</span>
-                    </div>
-                    <div className="kv-row">
-                      <span className="k">Description</span>
-                      <span className="v">{selectedExport.description}</span>
-                    </div>
+                    {selectedExport.sha256 && (
+                      <div style={{ marginTop: "8px", paddingTop: "8px", borderTop: "1px solid #1e293b" }}>
+                        <span style={{ display: "block", color: "#64748b", fontSize: "10px", marginBottom: "4px" }}>SHA256 Hash</span>
+                        <code style={{ fontSize: "9.5px", color: "#38bdf8", wordBreak: "break-all" }}>{selectedExport.sha256}</code>
+                      </div>
+                    )}
                   </div>
 
-                  {/* Input Sources Section */}
-                  <div className="drawer-section">
-                    <div className="section-head-with-action">
-                      <h4>Input Sources (4)</h4>
-                      <button className="btn-show-graph">Show in Graph</button>
-                    </div>
-
-                    <div className="input-sources-tree">
-                      <div className="input-folder-header">
-                        <Icon name="folder" />
-                        <span>Documents/Finance</span>
-                        <span className="item-count-badge">1/2 items ›</span>
-                      </div>
-
-                      <div className="input-items-list">
-                        <div className="input-item-check">
-                          <Icon name="file" />
-                          <span>invoice.zip</span>
-                          <span className="check-purple">✔</span>
-                        </div>
-                        <div className="input-item-check">
-                          <Icon name="file" />
-                          <span>update.exe</span>
-                          <span className="check-purple">✔</span>
-                        </div>
-                        <div className="input-item-check">
-                          <Icon name="file" />
-                          <span>payload.ps1</span>
-                          <span className="check-purple">✔</span>
-                        </div>
-                        <div className="input-item-check unselected">
-                          <Icon name="file" />
-                          <span>readme.txt</span>
-                          <span className="circle-gray">○</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Downstream Usage Section */}
-                  <div className="drawer-section">
-                    <h4>Downstream Usage</h4>
-                    <div className="downstream-card">
-                      <Icon name="bookmark" />
-                      <span>Used in {selectedExport.downstreamCount} subsequent blocks</span>
-                      <span className="chevron">›</span>
-                    </div>
+                  <div>
+                    <h4 style={{ fontSize: "11px", textTransform: "uppercase", color: "#cbd5e1", margin: "0 0 6px" }}>Evidence Source</h4>
+                    <p style={{ fontSize: "11px", color: "#94a3b8", lineHeight: 1.5, margin: 0 }}>
+                      Processed from <strong>{caseName}</strong> evidence inputs via procedure <strong>{selectedExport.scriptName}</strong>.
+                    </p>
                   </div>
                 </div>
               )}
 
               {activeTab === "lineage" && (
-                <div className="tab-lineage-content">
-                  <div className="lineage-step">
-                    <div className="lineage-node cyan">Evidence</div>
-                    <span className="lineage-arrow">↓</span>
-                    <div className="lineage-node purple">script_02_threat_hunter.jocky</div>
-                    <span className="lineage-arrow">↓</span>
-                    <div className="lineage-node green">triage_metadata.json</div>
+                <div className="lineage-tree-view">
+                  <div style={{ padding: "10px", background: "#090d14", border: "1px solid #1e293b", borderRadius: "6px", marginBottom: "10px" }}>
+                    <span style={{ fontSize: "10px", color: "#38bdf8", fontWeight: 600 }}>LEVEL 1: SOURCE EVIDENCE</span>
+                    <div style={{ fontSize: "11px", color: "#f8fafc", marginTop: "4px" }}>{caseName} (Raw Directory)</div>
+                  </div>
+
+                  <div style={{ textAlign: "center", color: "#64748b", fontSize: "12px", margin: "4px 0" }}>↓</div>
+
+                  <div style={{ padding: "10px", background: "#090d14", border: "1px solid #1e293b", borderRadius: "6px", marginBottom: "10px" }}>
+                    <span style={{ fontSize: "10px", color: "#818cf8", fontWeight: 600 }}>LEVEL 2: ACTIVE PROCEDURE</span>
+                    <div style={{ fontSize: "11px", color: "#f8fafc", marginTop: "4px" }}>{selectedExport.scriptName}</div>
+                  </div>
+
+                  <div style={{ textAlign: "center", color: "#64748b", fontSize: "12px", margin: "4px 0" }}>↓</div>
+
+                  <div style={{ padding: "10px", background: "#090d14", border: "1px solid #1e293b", borderRadius: "6px" }}>
+                    <span style={{ fontSize: "10px", color: "#10b981", fontWeight: 600 }}>LEVEL 3: EXPORT DELIVERABLE</span>
+                    <div style={{ fontSize: "11px", color: "#f8fafc", marginTop: "4px" }}>{selectedExport.name}</div>
                   </div>
                 </div>
               )}
 
               {activeTab === "preview" && (
-                <div className="tab-preview-content">
-                  <pre className="json-preview-box">
-{`{
-  "export_id": "${selectedExport.id}",
-  "file": "${selectedExport.name}",
-  "records_count": 4,
-  "sources": [
-    "Documents/Finance/invoice.zip",
-    "Downloads/update.exe",
-    "Downloads/payload.ps1"
-  ],
-  "sha256": "4a7d8c9b2e1f0a3d4e5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f"
-}`}
+                <div className="preview-code-view">
+                  <pre style={{ margin: 0, padding: "10px", background: "#090d14", border: "1px solid #1e293b", borderRadius: "6px", fontSize: "10.5px", color: "#cbd5e1", maxHeight: "360px", overflow: "auto", fontFamily: "monospace" }}>
+                    {selectedExport.previewData
+                      ? JSON.stringify(selectedExport.previewData, null, 2)
+                      : JSON.stringify({ file: selectedExport.name, status: "exported", records_count: selectedExport.recordsCount, sha256: selectedExport.sha256 }, null, 2)}
                   </pre>
                 </div>
               )}

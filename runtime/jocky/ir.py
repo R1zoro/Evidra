@@ -58,17 +58,32 @@ def lower_to_ir(procedure: Procedure) -> InvestigationIR:
 
 def _meaningful_inputs(operation: Operation) -> tuple[str, ...]:
     expression = operation.expression
+    if operation.capability == "correlate":
+        if "(" in expression and ")" in expression:
+            body = expression[expression.find("(") + 1 : expression.rfind(")")]
+            return tuple(token.strip().strip('"').strip("'") for token in body.split(",") if token.strip())
+        return tuple(tok.rstrip(",") for tok in operation.inputs if tok not in {"correlate"})
+    if operation.capability in {"events.merge", "merge"}:
+        if "(" in expression and ")" in expression:
+            body = expression[expression.find("(") + 1 : expression.rfind(")")]
+            return tuple(token.strip().strip('"').strip("'") for token in body.split(",") if token.strip())
+        return tuple(tok.rstrip(",") for tok in operation.inputs if tok not in {"events.merge", "merge"})
     if operation.capability == "filter":
         match = re.search(r"\bfrom\s+([A-Za-z0-9_/\\.-]+)", expression)
-        return (match.group(1),) if match else ()
-    if operation.capability == "correlate":
-        body = expression[expression.find("(") + 1 : expression.rfind(")")]
-        return tuple(token.strip().strip('"').strip("'") for token in body.split(",") if token.strip())
+        if match:
+            return (match.group(1),)
+        for inp in operation.inputs:
+            clean = inp.rstrip(",")
+            if clean and not clean.startswith(".") and not clean.startswith('"') and clean != "filter":
+                return (clean,)
+        return ()
     if operation.capability in {"copy", "evidence.materialize"}:
         copy_match = re.search(r'(?:copy|evidence\.materialize)\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))', expression)
         if copy_match:
             return (copy_match.group(1) or copy_match.group(2),)
     if " from " in f" {expression} ":
-        return (expression.split(" from ", 1)[1].strip().split()[0],)
-    tokens = expression.replace("(", " ").replace(")", " ").split()
-    return (tokens[1],) if len(tokens) > 1 and tokens[1] not in {"=", "as"} else ()
+        return (expression.split(" from ", 1)[1].strip().split()[0].rstrip(","),)
+    if operation.inputs:
+        return tuple(tok.rstrip(",") for tok in operation.inputs if tok not in {"from", "as", "with", "into", "to"} and not tok.startswith('"') and not tok.startswith("'"))
+    tokens = expression.replace("(", " ").replace(")", " ").replace(",", " ").split()
+    return (tokens[1].rstrip(","),) if len(tokens) > 1 and tokens[1] not in {"=", "as"} else ()

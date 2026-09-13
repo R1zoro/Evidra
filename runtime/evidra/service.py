@@ -73,21 +73,38 @@ class RuntimeService:
         }
         if self.store:
             response["run_id"] = self.store.save_execution(case_id, source, response, script_name=script_name)
-        response["context"] = {"source_reference": reference, "source_path": str(resolved_root)}
+        response["context"] = {
+            "source_reference": reference,
+            "source_path": str(resolved_root),
+            "script_name": script_name,
+        }
         return response
 
     def _materialize_requested_source(self, source: str, case_id: str, reference: str) -> None:
         if not self.store:
             return
         materialize_match = re.search(
-            r'(?:evidence\.materialize|copy)\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))(?:\s+as\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+)))?(?:\s*>\s*"?([^"\n]+)"?)?',
+            r'(?:evidence\.materialize|copy)\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))(?:\s+as\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+)))?(?:\s*(?:to|>)?\s*\"([^\"]+)\")?',
             source,
         )
         if not materialize_match:
             return
         src_name = materialize_match.group(1) or materialize_match.group(2) or reference
-        dest_val = materialize_match.group(3) or materialize_match.group(4)
-        source_record = self.store.find_source_reference(case_id, src_name) or self.store.find_source_reference(case_id, reference)
+        dest_val = materialize_match.group(5) or materialize_match.group(3) or materialize_match.group(4)
+
+        # Resolve any variable bindings, e.g. source = evidence.import "Sources/Alpha_Host"
+        var_match = re.search(rf'\b{re.escape(src_name)}\s*=\s*(?:evidence\.import)\s+["\']([^"\']+)["\']', source)
+        if var_match:
+            imported_ref = var_match.group(1)
+            clean_name = imported_ref.replace("\\", "/").rstrip("/").split("/")[-1]
+            source_record = (
+                self.store.find_source_reference(case_id, clean_name)
+                or self.store.find_source_reference(case_id, imported_ref)
+                or self.store.find_source_reference(case_id, reference)
+            )
+        else:
+            source_record = self.store.find_source_reference(case_id, src_name) or self.store.find_source_reference(case_id, reference)
+
         workspace = self.store.get_workspace(case_id)
         if not source_record or not workspace:
             return

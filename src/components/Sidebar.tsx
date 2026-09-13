@@ -1,7 +1,17 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Icon, getFileIcon } from './Icon';
 import { LogicalList, Empty } from './UI';
 import type { FsNode, SideView, Finding, OpenDoc, CaseSnapshot } from '../types';
+import type { RuntimeExecutionResponse } from '../api/runtimeClient';
+
+export interface ExportItem {
+  name: string;
+  path: string;
+  scriptName?: string;
+  size?: string;
+  recordsCount?: number;
+  sha256?: string;
+}
 
 export function SidebarContent({
   sideView,
@@ -12,6 +22,8 @@ export function SidebarContent({
   findings,
   openDocs,
   activeDocPath,
+  runHistory = [],
+  response,
   onOpenFile,
   onNewFile,
   onNewFolder,
@@ -33,6 +45,8 @@ export function SidebarContent({
   findings: Finding[];
   openDocs: OpenDoc[];
   activeDocPath: string | null;
+  runHistory?: { scriptName: string; docPath: string; response: RuntimeExecutionResponse }[];
+  response?: RuntimeExecutionResponse | null;
   onOpenFile: (node: FsNode) => void;
   onNewFile: (dir: string) => void;
   onNewFolder: (dir: string) => void;
@@ -46,6 +60,8 @@ export function SidebarContent({
   onSelectDoc: (path: string) => void;
   onLoadRun: (id: string) => void;
 }) {
+  const [exportSubTab, setExportSubTab] = useState<"deliverables" | "findings">("deliverables");
+
   const title = {
     EXPLORER: "EXPLORER",
     SOURCES: "SOURCES",
@@ -54,6 +70,80 @@ export function SidebarContent({
     RUNS: "RUNS",
     EXPORTS: "EXPORTS",
   }[sideView];
+
+  // Dynamically aggregate all exports from runHistory and tree
+  const exportsList = useMemo<ExportItem[]>(() => {
+    const map = new Map<string, ExportItem>();
+
+    // 1. Collect from runHistory
+    runHistory.forEach((run) => {
+      const results = run.response?.results || [];
+      results.forEach((res) => {
+        if (res.type === "Export" && res.value && typeof res.value === "object") {
+          const v = res.value as Record<string, any>;
+          const rel = v.relative_path || v.destination || "export.json";
+          const name = rel.split(/[\\/]/).pop() || rel;
+          const sizeKb = v.size_bytes !== undefined ? (v.size_bytes < 1024 ? `${v.size_bytes} B` : `${(v.size_bytes / 1024).toFixed(1)} KB`) : "";
+
+          map.set(rel, {
+            name,
+            path: rel,
+            scriptName: run.scriptName,
+            size: sizeKb,
+            recordsCount: v.records_count,
+            sha256: v.sha256,
+          });
+        }
+      });
+    });
+
+    // 2. Also check current response
+    if (response) {
+      const results = response.results || [];
+      results.forEach((res) => {
+        if (res.type === "Export" && res.value && typeof res.value === "object") {
+          const v = res.value as Record<string, any>;
+          const rel = v.relative_path || v.destination || "export.json";
+          const name = rel.split(/[\\/]/).pop() || rel;
+          const sizeKb = v.size_bytes !== undefined ? (v.size_bytes < 1024 ? `${v.size_bytes} B` : `${(v.size_bytes / 1024).toFixed(1)} KB`) : "";
+
+          if (!map.has(rel)) {
+            map.set(rel, {
+              name,
+              path: rel,
+              scriptName: response.context?.script_name || "procedure.jocky",
+              size: sizeKb,
+              recordsCount: v.records_count,
+              sha256: v.sha256,
+            });
+          }
+        }
+      });
+    }
+
+    // 3. Scan tree for files in Outputs/ or Exports/ folders
+    const scanTree = (nodes: FsNode[]) => {
+      nodes.forEach((n) => {
+        if (n.kind === "file") {
+          const cleanPath = n.path.replace(/\\/g, "/");
+          if (cleanPath.startsWith("Outputs/") || cleanPath.startsWith("Exports/") || cleanPath.includes("/Outputs/")) {
+            if (!map.has(cleanPath)) {
+              map.set(cleanPath, {
+                name: n.name,
+                path: cleanPath,
+                scriptName: "Case Export",
+              });
+            }
+          }
+        } else if (n.kind === "directory" && n.children) {
+          scanTree(n.children);
+        }
+      });
+    };
+    scanTree(tree);
+
+    return Array.from(map.values());
+  }, [runHistory, response, tree]);
 
   return (
     <>
@@ -165,25 +255,113 @@ export function SidebarContent({
       )}
 
       {sideView === "EXPORTS" && (
-        <div className="findings-pane">
-          {findings.length === 0 ? (
-            <Empty text="No exports saved yet. Run JOCKY export operations to log exported results here." />
-          ) : (
-            <div className="findings-list">
-              {findings.map((f) => (
-                <article className="finding-card" key={f.id}>
-                  <header>
-                    <Icon name="bookmark" />
-                    <strong>{f.title}</strong>
-                  </header>
-                  <p>{f.detail}</p>
-                  <footer>
-                    <small>{f.source} · {new Date(f.timestamp).toLocaleTimeString()}</small>
-                  </footer>
-                </article>
-              ))}
-            </div>
-          )}
+        <div className="exports-panel-view" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+          {/* Subtabs: Deliverables vs Bookmarks */}
+          <div className="export-subtabs" style={{ display: "flex", borderBottom: "1px solid #1e293b", background: "#090d14", padding: "0 8px" }}>
+            <button
+              style={{
+                flex: 1,
+                padding: "8px 4px",
+                background: "transparent",
+                border: 0,
+                borderBottom: exportSubTab === "deliverables" ? "2px solid #10b981" : "2px solid transparent",
+                color: exportSubTab === "deliverables" ? "#10b981" : "#64748b",
+                fontSize: "10px",
+                fontWeight: 700,
+                cursor: "pointer",
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+              }}
+              onClick={() => setExportSubTab("deliverables")}
+            >
+              Deliverables ({exportsList.length})
+            </button>
+            <button
+              style={{
+                flex: 1,
+                padding: "8px 4px",
+                background: "transparent",
+                border: 0,
+                borderBottom: exportSubTab === "findings" ? "2px solid #38bdf8" : "2px solid transparent",
+                color: exportSubTab === "findings" ? "#38bdf8" : "#64748b",
+                fontSize: "10px",
+                fontWeight: 700,
+                cursor: "pointer",
+                textTransform: "uppercase",
+                letterSpacing: "0.04em",
+              }}
+              onClick={() => setExportSubTab("findings")}
+            >
+              Findings ({findings.length})
+            </button>
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "10px" }}>
+            {exportSubTab === "deliverables" ? (
+              exportsList.length === 0 ? (
+                <Empty text="No exports created yet. Execute JOCKY export operations or generate reports to view deliverables here." />
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  {exportsList.map((exp) => (
+                    <article
+                      key={exp.path}
+                      className="export-deliverable-card"
+                      style={{
+                        background: "#0d1520",
+                        border: "1px solid #1e293b",
+                        borderRadius: "6px",
+                        padding: "10px 12px",
+                        cursor: "pointer",
+                        transition: "all 0.15s ease",
+                      }}
+                      onClick={() => onOpenFile({ name: exp.name, path: exp.path, kind: "file" })}
+                      title={`Click to open ${exp.path}`}
+                    >
+                      <header style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "6px" }}>
+                        <div style={{ color: "#10b981", fontSize: "14px" }}>
+                          <Icon name="save" />
+                        </div>
+                        <strong style={{ fontSize: "11px", color: "#f8fafc", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {exp.name}
+                        </strong>
+                        <span style={{ fontSize: "8.5px", background: "rgba(16, 185, 129, 0.15)", color: "#10b981", padding: "1px 5px", borderRadius: "3px", fontWeight: 700 }}>
+                          EXPORT
+                        </span>
+                      </header>
+
+                      <div style={{ fontSize: "10px", color: "#94a3b8", marginBottom: "4px" }}>
+                        <code>{exp.path}</code>
+                      </div>
+
+                      <footer style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "9px", color: "#64748b", borderTop: "1px solid #162030", paddingTop: "6px", marginTop: "6px" }}>
+                        <span>{exp.scriptName ? `📄 ${exp.scriptName}` : "Case Workspace"}</span>
+                        <span>{exp.size ? `${exp.size} ${exp.recordsCount ? `· ${exp.recordsCount} recs` : ""}` : "Ready"}</span>
+                      </footer>
+                    </article>
+                  ))}
+                </div>
+              )
+            ) : (
+              findings.length === 0 ? (
+                <Empty text="No bookmarks saved yet. Click the bookmark button on any result card to save findings." />
+              ) : (
+                <div className="findings-list">
+                  {findings.map((f) => (
+                    <article className="finding-card" key={f.id}>
+                      <header>
+                        <Icon name="bookmark" />
+                        <strong>{f.title}</strong>
+                      </header>
+                      <p>{f.detail}</p>
+                      <footer>
+                        <small>{f.source} · {new Date(f.timestamp).toLocaleTimeString()}</small>
+                      </footer>
+                    </article>
+                  ))}
+                </div>
+              )
+            )}
+          </div>
         </div>
       )}
     </>
@@ -218,56 +396,47 @@ export function FileTree({
   }, [collapseKey]);
 
   if (!nodes.length && depth === 0) {
-    return <div className="sidebar-empty">Case folder is empty. Click 📄+ above to create an investigation procedure.</div>;
+    return (
+      <div className="sidebar-empty">
+        <Empty text="Empty folder. Use + to create a file or folder." />
+      </div>
+    );
   }
 
   return (
-    <div className="file-tree">
+    <div className="file-tree" style={{ paddingLeft: depth === 0 ? 0 : 12 }}>
       {nodes.map((node) => {
         const isDir = node.kind === "directory";
-        const isExp = expanded[node.path] ?? false;
+        const isExpanded = expanded[node.path] ?? false;
 
         return (
-          <div key={node.path} className="tree-node-wrapper">
+          <div key={node.path} className="tree-node">
             <div
-              className="filesystem-row"
-              style={{ paddingLeft: 10 + depth * 14 }}
+              className={`tree-row ${isDir ? "directory" : "file"}`}
               onClick={() => {
                 if (isDir) {
-                  setExpanded((prev) => ({ ...prev, [node.path]: !isExp }));
+                  setExpanded((prev) => ({ ...prev, [node.path]: !prev[node.path] }));
                 } else {
                   onOpen(node);
                 }
               }}
               onContextMenu={(e) => onContextMenu(e, node)}
             >
-              <span className="twisty">{isDir ? (isExp ? "⌄" : "›") : ""}</span>
-              <Icon name={getFileIcon(node.name, node.kind, isExp)} />
-              <span className="tree-node-name">{node.name}</span>
-
-              <div className="tree-item-actions" onClick={(e) => e.stopPropagation()}>
-                {isDir && (
-                  <>
-                    <button title="New File inside this folder" onClick={() => onNewFile(node.path)}>
-                      <Icon name="plus" />
-                    </button>
-                    <button title="New Folder inside this folder" onClick={() => onNewFolder(node.path)}>
-                      <Icon name="folder" />
-                    </button>
-                  </>
-                )}
-                <button title="Rename" onClick={() => onRename(node)}>
-                  <Icon name="edit" />
-                </button>
-                <button title="Delete" className="trash" onClick={() => onDelete(node)}>
-                  <Icon name="trash" />
-                </button>
-              </div>
+              <span className="tree-indent-guide" />
+              {isDir ? (
+                <span className={`twisty ${isExpanded ? "open" : ""}`}>
+                  {isExpanded ? "⌄" : "›"}
+                </span>
+              ) : (
+                <span className="file-spacer" />
+              )}
+              <Icon name={isDir ? (isExpanded ? "folderOpen" : "folder") : getFileIcon(node.name, "file")} />
+              <span className="node-name" title={node.name}>{node.name}</span>
             </div>
 
-            {isDir && isExp && (
+            {isDir && isExpanded && node.children && (
               <FileTree
-                nodes={node.children ?? []}
+                nodes={node.children}
                 depth={depth + 1}
                 collapseKey={collapseKey}
                 onOpen={onOpen}

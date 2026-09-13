@@ -53,11 +53,21 @@ def parse_procedure(source: str) -> Procedure:
             destination = destination_match.group("destination").strip()
             expression = destination_match.group("body").strip()
         else:
-            as_match = re.search(r'\bas\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))', body)
-            destination = f'"{as_match.group(1) or as_match.group(2)}"' if as_match else None
+            as_match = re.search(r'\bas\s+(?:\"([^\"]+)\"|([A-Za-z0-9_/\\.-]+))(?:\s+\"([^\"]+)\")?', body)
+            if as_match and as_match.group(3):
+                destination = f'"{as_match.group(3)}"'
+                if name == "_":
+                    name = as_match.group(1) or as_match.group(2)
+            elif as_match:
+                alias = as_match.group(1) or as_match.group(2)
+                destination = f'"{alias}"'
+                if name == "_":
+                    name = alias
+            else:
+                destination = None
             expression = body.strip()
 
-        tokens = expression.replace("(", " ").replace(")", " ").split()
+        tokens = expression.replace("(", " ").replace(")", " ").replace(",", " ").split()
         if not tokens:
             diagnostics.append(f"line {line_number}: missing operation")
             continue
@@ -65,7 +75,13 @@ def parse_procedure(source: str) -> Procedure:
         capability = tokens[0]
         if capability == "filter":
             capability = "filter"
-        inputs = tuple(token for token in tokens[1:] if token not in {"from", "as"} and not token.startswith('"'))
+        inputs = tuple(
+            token.rstrip(",")
+            for token in tokens[1:]
+            if token not in {"from", "as", "with", "into", "to"}
+            and not token.startswith('"')
+            and not token.startswith("'")
+        )
         current_operations.append(Operation(line_number, name, capability, expression, inputs, destination))
 
     close_stage()

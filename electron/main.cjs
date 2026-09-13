@@ -60,9 +60,10 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 700,
     frame: false,
-    backgroundColor: "#20303d",
+    backgroundColor: "#090d14",
     webPreferences: { preload: path.join(__dirname, "preload.cjs"), contextIsolation: true, nodeIntegration: false },
   });
+  window.maximize();
   if (app.isPackaged) window.loadFile(path.join(projectRoot, "dist", "index.html"));
   else window.loadURL(process.env.EVIDRA_DEV_URL || "http://127.0.0.1:5173");
 }

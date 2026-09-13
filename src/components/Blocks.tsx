@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { Icon } from "./Icon";
 import type { RuntimeExecutionResponse } from "../api/runtimeClient";
 
@@ -36,7 +36,7 @@ export interface WireConnection {
   color: string;
 }
 
-const CAPABILITY_DEFINITIONS: Record<
+export const CAPABILITY_DEFINITIONS: Record<
   string,
   {
     title: string;
@@ -125,6 +125,29 @@ const CAPABILITY_DEFINITIONS: Record<
       matchThreshold: 1,
     },
   },
+  "pcap.analyze": {
+    title: "PCAP Network Analysis",
+    category: "examination",
+    stage: "examine",
+    outputType: "NetworkCollection",
+    description: "Extracts network flows, DNS queries, and flags suspicious C2 beacon ports from PCAP files.",
+    defaultParams: {
+      extractDns: true,
+      detectC2Beacons: true,
+    },
+  },
+  "registry.parse": {
+    title: "Windows Registry Parser",
+    category: "examination",
+    stage: "examine",
+    outputType: "RegistryCollection",
+    description: "Parses Windows registry hives and .reg exports for persistence, UserAssist, and USB history.",
+    defaultParams: {
+      detectAutoStart: true,
+      decodeUserAssist: true,
+      detectUsbDevices: true,
+    },
+  },
   "events.extract": {
     title: "Extract Events",
     category: "analysis",
@@ -181,7 +204,7 @@ const CAPABILITY_DEFINITIONS: Record<
   },
 };
 
-const CATEGORY_COLORS: Record<BlockCategory, string> = {
+export const CATEGORY_COLORS: Record<BlockCategory, string> = {
   input: "#38bdf8",
   preparation: "#c084fc",
   examination: "#10b981",
@@ -194,20 +217,225 @@ const CATEGORY_COLORS: Record<BlockCategory, string> = {
 const CARD_WIDTH = 230;
 
 function getCardHeight(block: CanvasBlock): number {
-  if (block.isCompact) return 48;
+  if (block.isCompact) return 38;
   if (block.capability === "evidence.import") {
-    const srcCount = (block.sources?.length ?? 1);
-    return 100 + srcCount * 22;
+    const srcCount = block.sources?.length ?? 1;
+    return 96 + srcCount * 22;
   }
   if (block.inputVars.length > 1) {
-    return 126;
+    return 120;
   }
-  return 112;
+  return 108;
+}
+
+/**
+ * Parses JOCKY DSL code into interactive block nodes and wire connections.
+ */
+export function parseDslToBlocks(dsl: string): { blocks: CanvasBlock[]; connections: WireConnection[] } {
+  if (!dsl || !dsl.trim()) {
+    return { blocks: [], connections: [] };
+  }
+
+  const lines = dsl.split("\n");
+  let currentStage: BlockStage = "prepare";
+  const parsedBlocks: CanvasBlock[] = [];
+  const stageCounts: Record<string, number> = { prepare: 0, examine: 0, analysis: 0, export: 0 };
+
+  const stageX: Record<BlockStage, number> = {
+    prepare: 60,
+    examine: 360,
+    analysis: 660,
+    export: 960,
+  };
+
+  lines.forEach((line, idx) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      const s = trimmed.slice(1, -1).toLowerCase();
+      if (s === "prepare" || s === "examine" || s === "analysis" || s === "export") {
+        currentStage = s as BlockStage;
+      }
+      return;
+    }
+    if (!trimmed || trimmed.startsWith("#")) return;
+
+    let outputVar = `var_${idx}`;
+    let rhs = trimmed;
+    if (trimmed.includes("=")) {
+      const parts = trimmed.split("=");
+      outputVar = parts[0].trim();
+      rhs = parts.slice(1).join("=").trim();
+    }
+
+    let cap = "files.list";
+    let cat: BlockCategory = "examination";
+    let stage: BlockStage = currentStage;
+    let inputVars: string[] = [];
+    let sources: string[] | undefined = undefined;
+    const parameters: Record<string, any> = {};
+
+    if (rhs.includes("evidence.import") || trimmed.includes("evidence.import")) {
+      cap = "evidence.import";
+      cat = "input";
+      stage = "prepare";
+      const matches = trimmed.match(/"([^"]+)"/g);
+      if (matches && matches.length > 0) {
+        sources = matches.map((m) => m.replace(/"/g, ""));
+      } else {
+        sources = ["C:\\Cases\\Evidence"];
+      }
+    } else if (rhs.startsWith("copy ") || trimmed.startsWith("copy ")) {
+      cap = "copy";
+      cat = "preparation";
+      stage = "prepare";
+      const copyMatch = rhs.match(/copy\s+([^\s]+)\s+as\s+([^\s"]+)(?:\s+"([^"]+)")?/);
+      if (copyMatch) {
+        inputVars = [copyMatch[1]];
+        parameters.targetName = copyMatch[2];
+        if (copyMatch[3]) parameters.targetPath = copyMatch[3];
+      }
+    } else if (rhs.startsWith("hash ") || trimmed.startsWith("hash ")) {
+      cap = "hash";
+      cat = "preparation";
+      stage = "prepare";
+      const hashMatch = rhs.match(/hash\s+([^\s]+)/);
+      if (hashMatch) inputVars = [hashMatch[1]];
+    } else if (rhs.startsWith("files.list") || trimmed.startsWith("files.list")) {
+      cap = "files.list";
+      cat = "examination";
+      stage = "examine";
+      const match = rhs.match(/files\.list\s+([^\s]+)/);
+      if (match) inputVars = [match[1]];
+    } else if (rhs.startsWith("filter") || trimmed.startsWith("filter")) {
+      cap = "filter";
+      cat = "examination";
+      stage = "examine";
+      const fromMatch = rhs.match(/from\s+([^\s]+)/);
+      if (fromMatch) inputVars = [fromMatch[1]];
+      const extMatches = rhs.match(/"([^"]+)"/g);
+      if (extMatches) {
+        parameters.extensions = extMatches.map((m) => m.replace(/"/g, ""));
+      }
+    } else if (rhs.startsWith("metadata.extract") || trimmed.startsWith("metadata.extract")) {
+      cap = "metadata.extract";
+      cat = "examination";
+      stage = "examine";
+      const match = rhs.match(/metadata\.extract\s+([^\s]+)/);
+      if (match) inputVars = [match[1]];
+    } else if (rhs.startsWith("yara.scan") || trimmed.startsWith("yara.scan")) {
+      cap = "yara.scan";
+      cat = "examination";
+      stage = "examine";
+      const match = rhs.match(/yara\.scan\s+([^\s]+)(?:\s+with\s+"([^"]+)")?/);
+      if (match) {
+        inputVars = [match[1]];
+        if (match[2]) parameters.ruleset = match[2];
+      }
+    } else if (rhs.startsWith("pcap.analyze") || trimmed.startsWith("pcap.analyze")) {
+      cap = "pcap.analyze";
+      cat = "examination";
+      stage = "examine";
+      const match = rhs.match(/pcap\.analyze\s+([^\s]+)/);
+      if (match) inputVars = [match[1]];
+    } else if (rhs.startsWith("registry.parse") || trimmed.startsWith("registry.parse")) {
+      cap = "registry.parse";
+      cat = "examination";
+      stage = "examine";
+      const match = rhs.match(/registry\.parse\s+([^\s]+)/);
+      if (match) inputVars = [match[1]];
+    } else if (rhs.startsWith("events.extract") || trimmed.startsWith("events.extract")) {
+      cap = "events.extract";
+      cat = "analysis";
+      stage = "analysis";
+      const match = rhs.match(/from\s+([^\s]+)/);
+      if (match) inputVars = [match[1]];
+    } else if (rhs.startsWith("events.merge") || trimmed.startsWith("events.merge")) {
+      cap = "events.merge";
+      cat = "preparation";
+      stage = "examine";
+      const args = rhs.replace("events.merge", "").trim();
+      inputVars = args.split(",").map((s) => s.trim()).filter(Boolean);
+    } else if (rhs.startsWith("timeline.build") || trimmed.startsWith("timeline.build")) {
+      cap = "timeline.build";
+      cat = "analysis";
+      stage = "analysis";
+      const match = rhs.match(/from\s+([^\s]+)/);
+      if (match) inputVars = [match[1]];
+    } else if (rhs.startsWith("correlate") || trimmed.startsWith("correlate")) {
+      cap = "correlate";
+      cat = "correlation";
+      stage = "analysis";
+      const inner = rhs.match(/correlate\s*\(([^)]+)\)/);
+      if (inner) {
+        inputVars = inner[1].split(",").map((s) => s.trim()).filter(Boolean);
+      }
+    } else if (trimmed.startsWith("export ") || rhs.startsWith("export ")) {
+      cap = "export";
+      cat = "output";
+      stage = "export";
+      outputVar = `export_${idx}`;
+      const expMatch = trimmed.match(/export\s+([^\s>]+)\s*>\s*"([^"]+)"/);
+      if (expMatch) {
+        inputVars = [expMatch[1]];
+        parameters.destination = expMatch[2];
+      }
+    } else {
+      // General fallback
+      const tokens = rhs.split(/\s+/);
+      tokens.forEach((tok) => {
+        const clean = tok.replace(/[^a-zA-Z0-9_]/g, "");
+        if (clean && parsedBlocks.some((b) => b.outputVar === clean)) {
+          inputVars.push(clean);
+        }
+      });
+    }
+
+    const def = CAPABILITY_DEFINITIONS[cap] || CAPABILITY_DEFINITIONS["files.list"];
+    const id = `b-${idx}-${cap.replace(".", "_")}`;
+
+    const colX = stageX[stage] ?? 60;
+    const countInStage = stageCounts[stage] ?? 0;
+    stageCounts[stage] = countInStage + 1;
+    const rowY = 50 + countInStage * 155;
+
+    parsedBlocks.push({
+      id,
+      category: cat,
+      title: def.title,
+      capability: cap,
+      stage,
+      outputVar,
+      outputType: def.outputType,
+      inputVars,
+      sources,
+      x: colX,
+      y: rowY,
+      parameters: { ...def.defaultParams, ...parameters },
+    });
+  });
+
+  // Construct wire connections from inputVars!
+  const connections: WireConnection[] = [];
+  parsedBlocks.forEach((toBlock) => {
+    toBlock.inputVars.forEach((inVar) => {
+      const fromBlock = parsedBlocks.find((b) => b.outputVar === inVar);
+      if (fromBlock && fromBlock.id !== toBlock.id) {
+        connections.push({
+          id: `conn-${fromBlock.id}-${toBlock.id}`,
+          fromId: fromBlock.id,
+          toId: toBlock.id,
+          color: CATEGORY_COLORS[fromBlock.category] || "#38bdf8",
+        });
+      }
+    });
+  });
+
+  return { blocks: parsedBlocks, connections };
 }
 
 export function Blocks({
   activeDocPath,
-  sourceCode: _sourceCode,
+  sourceCode,
   response: _response,
   onSyncToEditor,
   onRunWorkflow,
@@ -223,190 +451,25 @@ export function Blocks({
   const [showDslPanel, setShowDslPanel] = useState(true);
   const [selectedBlockId, setSelectedBlockId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"parameters" | "general">("parameters");
+  const [userHasEdited, setUserHasEdited] = useState(false);
+  const [notice, setNotice] = useState<string>("");
 
-  const [scriptName] = useState(
-    activeDocPath ? activeDocPath.split(/[\\/]/).pop() ?? "investigation.jocky" : "investigation.jocky"
-  );
+  // Multi-canvas state
+  const [canvasNames, setCanvasNames] = useState<string[]>(["Primary Workflow"]);
+  const [activeCanvas, setActiveCanvas] = useState<string>("Primary Workflow");
 
   const canvasRef = useRef<HTMLDivElement>(null);
 
-  // Initial workflow state matching reference image media_1789302097635.jpg
-  const [blocks, setBlocks] = useState<CanvasBlock[]>([
-    {
-      id: "b-imp-1",
-      category: "input",
-      title: "Import Evidence",
-      capability: "evidence.import",
-      stage: "prepare",
-      x: 60,
-      y: 40,
-      outputVar: "evidence_1",
-      outputType: "EvidenceSource",
-      inputVars: [],
-      sources: ["C:\\Cases\\Laptop_1"],
-      parameters: { sources: ["C:\\Cases\\Laptop_1"] },
-    },
-    {
-      id: "b-imp-2",
-      category: "input",
-      title: "Import Evidence",
-      capability: "evidence.import",
-      stage: "prepare",
-      x: 320,
-      y: 40,
-      outputVar: "evidence_2",
-      outputType: "EvidenceSource",
-      inputVars: [],
-      sources: ["D:\\Forensics\\Memory"],
-      parameters: { sources: ["D:\\Forensics\\Memory"] },
-    },
-    {
-      id: "b-imp-3",
-      category: "input",
-      title: "Import Evidence",
-      capability: "evidence.import",
-      stage: "prepare",
-      x: 580,
-      y: 40,
-      outputVar: "evidence_3",
-      outputType: "EvidenceSource",
-      inputVars: [],
-      sources: ["E:\\Logs\\", "E:\\Registry\\"],
-      parameters: { sources: ["E:\\Logs\\", "E:\\Registry\\"] },
-    },
-    {
-      id: "b-meta-1",
-      category: "examination",
-      title: "Extract Metadata",
-      capability: "metadata.extract",
-      stage: "examine",
-      x: 60,
-      y: 240,
-      outputVar: "metadata_1",
-      outputType: "MetadataSet",
-      inputVars: ["evidence_1"],
-      parameters: { basicMetadata: true, sha256: true, fileType: true, timestamps: true, extendedAttributes: true },
-    },
-    {
-      id: "b-meta-2",
-      category: "examination",
-      title: "Extract Metadata",
-      capability: "metadata.extract",
-      stage: "examine",
-      x: 320,
-      y: 240,
-      outputVar: "metadata_2",
-      outputType: "MetadataSet",
-      inputVars: ["evidence_2"],
-      parameters: { basicMetadata: true, sha256: true, fileType: true, timestamps: true, extendedAttributes: true },
-    },
-    {
-      id: "b-meta-3",
-      category: "examination",
-      title: "Extract Metadata",
-      capability: "metadata.extract",
-      stage: "examine",
-      x: 580,
-      y: 240,
-      outputVar: "metadata_3",
-      outputType: "MetadataSet",
-      inputVars: ["evidence_3"],
-      parameters: { basicMetadata: true, sha256: true, fileType: true, timestamps: true, extendedAttributes: true },
-    },
-    {
-      id: "b-comb-1",
-      category: "preparation",
-      title: "Combine Metadata",
-      capability: "events.merge",
-      stage: "examine",
-      x: 190,
-      y: 440,
-      outputVar: "combined_metadata",
-      outputType: "MergedDataset",
-      inputVars: ["metadata_1", "metadata_2"],
-      parameters: { deduplicate: true },
-    },
-    {
-      id: "b-filt-1",
-      category: "preparation",
-      title: "Filter Artifacts",
-      capability: "filter",
-      stage: "examine",
-      x: 580,
-      y: 420,
-      outputVar: "suspicious_files",
-      outputType: "FilteredArtifacts",
-      inputVars: ["metadata_3"],
-      parameters: { extensions: [".zip", ".exe", ".bat", ".ps1"] },
-    },
-    {
-      id: "b-time-1",
-      category: "analysis",
-      title: "Build Timeline",
-      capability: "timeline.build",
-      stage: "analysis",
-      x: 190,
-      y: 600,
-      outputVar: "timeline",
-      outputType: "TimelineEvents",
-      inputVars: ["combined_metadata"],
-      parameters: { timeWindowHours: 48 },
-    },
-    {
-      id: "b-yara-1",
-      category: "analysis",
-      title: "YARA Scan",
-      capability: "yara.scan",
-      stage: "examine",
-      x: 580,
-      y: 580,
-      outputVar: "yara_results",
-      outputType: "YaraResults",
-      inputVars: ["suspicious_files"],
-      parameters: { ruleset: "default_triage.yar" },
-    },
-    {
-      id: "b-corr-1",
-      category: "correlation",
-      title: "Correlate Findings",
-      capability: "correlate",
-      stage: "analysis",
-      x: 380,
-      y: 750,
-      outputVar: "findings",
-      outputType: "CorrelatedFindings",
-      inputVars: ["timeline", "yara_results"],
-      parameters: { correlationKey: "timestamps + user_id" },
-    },
-    {
-      id: "b-exp-1",
-      category: "output",
-      title: "Export Results",
-      capability: "export",
-      stage: "export",
-      x: 380,
-      y: 920,
-      outputVar: "investigation_report.json",
-      outputType: "ExportReport",
-      inputVars: ["findings"],
-      parameters: { destination: "./Outputs/investigation_report.json", format: "JSON" },
-    },
-  ]);
+  // Initialize blocks based on sourceCode or empty
+  const [blocks, setBlocks] = useState<CanvasBlock[]>(() => {
+    const parsed = parseDslToBlocks(sourceCode);
+    return parsed.blocks;
+  });
 
-  // Wire connections state
-  const [connections, setConnections] = useState<WireConnection[]>([
-    { id: "c-1", fromId: "b-imp-1", toId: "b-meta-1", color: "#38bdf8" },
-    { id: "c-2", fromId: "b-imp-2", toId: "b-meta-2", color: "#38bdf8" },
-    { id: "c-3", fromId: "b-imp-3", toId: "b-meta-3", color: "#38bdf8" },
-    { id: "c-4", fromId: "b-meta-1", toId: "b-comb-1", color: "#10b981" },
-    { id: "c-5", fromId: "b-meta-2", toId: "b-comb-1", color: "#10b981" },
-    { id: "c-6", fromId: "b-meta-3", toId: "b-filt-1", color: "#10b981" },
-    { id: "c-7", fromId: "b-comb-1", toId: "b-time-1", color: "#c084fc" },
-    { id: "c-8", fromId: "b-filt-1", toId: "b-yara-1", color: "#c084fc" },
-    { id: "c-9", fromId: "b-time-1", toId: "b-corr-1", color: "#fb923c" },
-    { id: "c-10", fromId: "b-yara-1", toId: "b-corr-1", color: "#fb923c" },
-    { id: "c-11", fromId: "b-corr-1", toId: "b-exp-1", color: "#f43f5e" },
-  ]);
+  const [connections, setConnections] = useState<WireConnection[]>(() => {
+    const parsed = parseDslToBlocks(sourceCode);
+    return parsed.connections;
+  });
 
   // Interactive wire dragging state
   const [wireDrag, setWireDrag] = useState<{
@@ -418,13 +481,49 @@ export function Blocks({
     color: string;
   } | null>(null);
 
-  // Target block highlight when hovering during wire drag
   const [dropTargetBlockId, setDropTargetBlockId] = useState<string | null>(null);
+
+  const currentCaseId = typeof sessionStorage !== "undefined" ? sessionStorage.getItem("evidra.caseId") || "default" : "default";
+
+  // Load canvas from localStorage when activeCanvas, caseId, or activeDocPath changes
+  useEffect(() => {
+    try {
+      const key = `evidra.canvas.${currentCaseId}.${activeDocPath || "root"}.${activeCanvas}`;
+      const saved = localStorage.getItem(key);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed.blocks && parsed.connections) {
+          setBlocks(parsed.blocks);
+          setConnections(parsed.connections);
+          setUserHasEdited(false);
+          return;
+        }
+      }
+    } catch {}
+
+    // Fall back to parsing the active document's sourceCode for this case
+    const parsed = parseDslToBlocks(sourceCode);
+    setBlocks(parsed.blocks);
+    setConnections(parsed.connections);
+    setUserHasEdited(false);
+  }, [activeCanvas, currentCaseId, activeDocPath]);
+
+  // Save canvas to localStorage when changed
+  useEffect(() => {
+    if (userHasEdited && blocks.length > 0) {
+      try {
+        const key = `evidra.canvas.${currentCaseId}.${activeDocPath || "root"}.${activeCanvas}`;
+        localStorage.setItem(key, JSON.stringify({ blocks, connections }));
+      } catch {}
+    }
+  }, [blocks, connections, userHasEdited, activeCanvas, currentCaseId, activeDocPath]);
 
   // Generate JOCKY DSL from current blocks and connections
   const generateDSL = useCallback((): string => {
+    if (blocks.length === 0) return "";
+
     const lines: string[] = [
-      "# Generated via Building Blocks",
+      "# Generated via Evidra Building Blocks",
       "# JOCKY Forensic Investigation Procedure",
       "",
     ];
@@ -447,7 +546,11 @@ export function Blocks({
           } else if (b.capability === "copy") {
             const inVar = b.inputVars[0] || "source";
             const tgtName = b.parameters.targetName || "working_copy";
-            lines.push(`    ${b.outputVar} = copy ${inVar} as "${tgtName}"`);
+            if (b.parameters.targetPath) {
+              lines.push(`    ${b.outputVar} = copy ${inVar} as ${tgtName} "${b.parameters.targetPath}"`);
+            } else {
+              lines.push(`    ${b.outputVar} = copy ${inVar} as "${tgtName}"`);
+            }
           } else if (b.capability === "hash") {
             const inVar = b.inputVars[0] || "working";
             lines.push(`    ${b.outputVar} = hash ${inVar}`);
@@ -470,6 +573,12 @@ export function Blocks({
             const inVar = b.inputVars[0] || "suspicious_files";
             const ruleset = b.parameters.ruleset || "default_triage.yar";
             lines.push(`    ${b.outputVar} = yara.scan ${inVar} with "${ruleset}"`);
+          } else if (b.capability === "pcap.analyze") {
+            const inVar = b.inputVars[0] || "pcap_files";
+            lines.push(`    ${b.outputVar} = pcap.analyze ${inVar}`);
+          } else if (b.capability === "registry.parse") {
+            const inVar = b.inputVars[0] || "reg_files";
+            lines.push(`    ${b.outputVar} = registry.parse ${inVar}`);
           } else if (b.capability === "events.extract") {
             const inVar = b.inputVars[0] || "suspicious";
             lines.push(`    ${b.outputVar} = events.extract from ${inVar}`);
@@ -494,12 +603,41 @@ export function Blocks({
 
   const currentDsl = generateDSL();
 
-  // Sync with main editor whenever workflow changes
-  useEffect(() => {
-    if (onSyncToEditor) {
-      onSyncToEditor(currentDsl);
-    }
-  }, [currentDsl, onSyncToEditor]);
+  // Sync from Editor action
+  const syncFromEditor = () => {
+    const parsed = parseDslToBlocks(sourceCode);
+    setBlocks(parsed.blocks);
+    setConnections(parsed.connections);
+    setUserHasEdited(false);
+    setSelectedBlockId(null);
+    setNotice(`Synced ${parsed.blocks.length} blocks & ${parsed.connections.length} wires from editor.`);
+    setTimeout(() => setNotice(""), 2500);
+  };
+
+  // Auto-layout / tidy canvas
+  const tidyLayout = () => {
+    const stageCounts: Record<string, number> = { prepare: 0, examine: 0, analysis: 0, export: 0 };
+    const stageX: Record<BlockStage, number> = {
+      prepare: 60,
+      examine: 360,
+      analysis: 660,
+      export: 960,
+    };
+
+    setBlocks((prev) =>
+      prev.map((b) => {
+        const count = stageCounts[b.stage] ?? 0;
+        stageCounts[b.stage] = count + 1;
+        return {
+          ...b,
+          x: stageX[b.stage] ?? 60,
+          y: 50 + count * 155,
+        };
+      })
+    );
+    setNotice("Auto-layout applied cleanly across investigation stages.");
+    setTimeout(() => setNotice(""), 2000);
+  };
 
   // Handle active wire dragging on window
   useEffect(() => {
@@ -517,12 +655,12 @@ export function Blocks({
       // Hit-test target block
       const target = blocks.find((b) => {
         if (b.id === wireDrag.fromBlockId) return false;
-        const bH = getCardHeight(b);
+        const bH = (globalCompact || b.isCompact) ? 38 : getCardHeight(b);
         return (
           currentX >= b.x &&
           currentX <= b.x + CARD_WIDTH &&
-          currentY >= b.y &&
-          currentY <= b.y + bH
+          currentY >= b.y - 10 &&
+          currentY <= b.y + bH + 10
         );
       });
 
@@ -535,7 +673,6 @@ export function Blocks({
         const toBlock = blocks.find((b) => b.id === dropTargetBlockId);
 
         if (fromBlock && toBlock && fromBlock.id !== toBlock.id) {
-          // Check if connection already exists
           const exists = connections.some(
             (c) => c.fromId === fromBlock.id && c.toId === toBlock.id
           );
@@ -549,8 +686,8 @@ export function Blocks({
             };
 
             setConnections((prev) => [...prev, newConn]);
+            setUserHasEdited(true);
 
-            // Automatically bind the output variable to the target block's input
             setBlocks((prev) =>
               prev.map((b) => {
                 if (b.id !== toBlock.id) return b;
@@ -575,12 +712,13 @@ export function Blocks({
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [wireDrag, dropTargetBlockId, blocks, connections, zoomLevel]);
+  }, [wireDrag, dropTargetBlockId, blocks, connections, zoomLevel, globalCompact]);
 
   // Start wire drag from a block's bottom port
   const startWireDrag = (block: CanvasBlock, e: React.MouseEvent) => {
     e.stopPropagation();
-    const bHeight = getCardHeight(block);
+    const isCompact = globalCompact || block.isCompact;
+    const bHeight = isCompact ? 38 : getCardHeight(block);
     const startX = block.x + CARD_WIDTH / 2;
     const startY = block.y + bHeight;
 
@@ -594,6 +732,55 @@ export function Blocks({
     });
   };
 
+  // Delete a wire connection
+  const deleteConnection = (connId: string) => {
+    const conn = connections.find((c) => c.id === connId);
+    if (conn) {
+      const fromBlock = blocks.find((b) => b.id === conn.fromId);
+      if (fromBlock) {
+        setBlocks((prev) =>
+          prev.map((b) => {
+            if (b.id !== conn.toId) return b;
+            return {
+              ...b,
+              inputVars: b.inputVars.filter((v) => v !== fromBlock.outputVar),
+            };
+          })
+        );
+      }
+    }
+    setConnections((prev) => prev.filter((c) => c.id !== connId));
+    setUserHasEdited(true);
+  };
+
+  // Add block by explicit capability
+  const addBlockByCapability = (capKey: string) => {
+    const def = CAPABILITY_DEFINITIONS[capKey];
+    if (!def) return;
+    const id = `b-${Date.now().toString(36).slice(-4)}`;
+    const suffix = id.slice(-2);
+    const outputVar = `${def.outputType.toLowerCase()}_${suffix}`;
+
+    const newBlock: CanvasBlock = {
+      id,
+      category: def.category,
+      title: def.title,
+      capability: capKey,
+      stage: def.stage,
+      outputVar,
+      outputType: def.outputType,
+      inputVars: [],
+      x: 180 + (blocks.length % 4) * 60,
+      y: 120 + (blocks.length % 4) * 60,
+      sources: def.category === "input" ? ["C:\\Cases\\NewEvidence"] : undefined,
+      parameters: { ...def.defaultParams },
+    };
+
+    setBlocks((prev) => [...prev, newBlock]);
+    setSelectedBlockId(id);
+    setUserHasEdited(true);
+  };
+
   // Add a new block to the canvas
   const addBlock = (cat: BlockCategory) => {
     const id = `b-${Date.now().toString(36).slice(-4)}`;
@@ -601,7 +788,7 @@ export function Blocks({
 
     if (cat === "input") capKey = "evidence.import";
     else if (cat === "preparation") capKey = "copy";
-    else if (cat === "examination") capKey = "metadata.extract";
+    else if (cat === "examination") capKey = "files.list";
     else if (cat === "analysis") capKey = "timeline.build";
     else if (cat === "correlation") capKey = "correlate";
     else if (cat === "output") capKey = "export";
@@ -627,6 +814,7 @@ export function Blocks({
 
     setBlocks((prev) => [...prev, newBlock]);
     setSelectedBlockId(id);
+    setUserHasEdited(true);
   };
 
   // Delete block and its wires
@@ -636,6 +824,14 @@ export function Blocks({
       prev.filter((c) => c.fromId !== blockId && c.toId !== blockId)
     );
     if (selectedBlockId === blockId) setSelectedBlockId(null);
+    setUserHasEdited(true);
+  };
+
+  // Toggle individual compact
+  const toggleCompact = (blockId: string) => {
+    setBlocks((prev) =>
+      prev.map((b) => (b.id === blockId ? { ...b, isCompact: !b.isCompact } : b))
+    );
   };
 
   // Add source to an import block
@@ -647,6 +843,7 @@ export function Blocks({
         return { ...b, sources: srcs };
       })
     );
+    setUserHasEdited(true);
   };
 
   // Update a source path
@@ -659,6 +856,19 @@ export function Blocks({
         return { ...b, sources: newSrcs };
       })
     );
+    setUserHasEdited(true);
+  };
+
+  // Add new canvas
+  const handleNewCanvas = () => {
+    const name = window.prompt("Enter new canvas name:", `Workflow ${canvasNames.length + 1}`);
+    if (name && !canvasNames.includes(name)) {
+      setCanvasNames((prev) => [...prev, name]);
+      setActiveCanvas(name);
+      setBlocks([]);
+      setConnections([]);
+      setSelectedBlockId(null);
+    }
   };
 
   const selectedBlock = blocks.find((b) => b.id === selectedBlockId);
@@ -668,9 +878,24 @@ export function Blocks({
       {/* Top Controls Toolbar */}
       <div className="blocks-top-toolbar">
         <div className="toolbar-left-group">
-          <span className="toolbar-section-label">
-            <strong>Blocks</strong> <small>Drag to canvas</small>
-          </span>
+          {/* Canvas Switcher */}
+          <div className="canvas-switcher-wrap">
+            <span className="toolbar-section-label">CANVAS:</span>
+            <select
+              className="canvas-select-dropdown"
+              value={activeCanvas}
+              onChange={(e) => setActiveCanvas(e.target.value)}
+            >
+              {canvasNames.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <button className="btn-new-canvas" onClick={handleNewCanvas} title="Create new canvas">
+              +
+            </button>
+          </div>
 
           <div className="category-pills-row">
             <button
@@ -715,20 +940,54 @@ export function Blocks({
             >
               + Output
             </button>
+            <select
+              className="category-pill"
+              style={{
+                background: "#0f172a",
+                color: "#38bdf8",
+                borderColor: "#38bdf8",
+                padding: "2px 8px",
+                fontSize: "11px",
+                cursor: "pointer",
+                outline: "none",
+              }}
+              value=""
+              onChange={(e) => {
+                if (e.target.value) {
+                  addBlockByCapability(e.target.value);
+                }
+              }}
+              title="Add Forensic Capability Block"
+            >
+              <option value="" disabled>+ Forensic Tool ▾</option>
+              <option value="yara.scan">VirusTotal YARA (yara.scan)</option>
+              <option value="pcap.analyze">Wireshark/Zeek (pcap.analyze)</option>
+              <option value="registry.parse">RECmd/RegRipper (registry.parse)</option>
+              <option value="prefetch.extract">PECmd Prefetch (prefetch.extract)</option>
+              <option value="metadata.extract">TSK Metadata (metadata.extract)</option>
+              <option value="events.extract">Plaso Events (events.extract)</option>
+              <option value="timeline.build">Supertimeline (timeline.build)</option>
+              <option value="correlate">Correlation Matrix (correlate)</option>
+            </select>
           </div>
         </div>
 
         <div className="blocks-action-btns">
+          {notice && <span className="canvas-notice-badge">{notice}</span>}
+
           <button
             className="btn-action-secondary"
-            onClick={() => {
-              setBlocks([]);
-              setConnections([]);
-              setSelectedBlockId(null);
-            }}
-            title="Clear all blocks"
+            onClick={syncFromEditor}
+            title="Load active editor script into blocks"
           >
-            ✕ Clear
+            📥 Sync from Script
+          </button>
+          <button
+            className="btn-action-secondary"
+            onClick={tidyLayout}
+            title="Automatically arrange blocks into clean stage columns"
+          >
+            ☵ Auto-Layout
           </button>
           <button
             className="btn-action-secondary"
@@ -745,10 +1004,27 @@ export function Blocks({
             {showDslPanel ? "Hide DSL" : "Show DSL"}
           </button>
           <button
-            className="btn-action-primary"
-            onClick={() => onSyncToEditor?.(currentDsl)}
+            className="btn-action-secondary"
+            onClick={() => {
+              setBlocks([]);
+              setConnections([]);
+              setSelectedBlockId(null);
+            }}
+            title="Reset canvas workspace"
           >
-            <Icon name="save" /> Save
+            ✕ Clear
+          </button>
+          <button
+            className="btn-action-primary"
+            onClick={() => {
+              if (currentDsl && onSyncToEditor) {
+                onSyncToEditor(currentDsl);
+                setNotice("Applied blocks to editor script.");
+                setTimeout(() => setNotice(""), 2000);
+              }
+            }}
+          >
+            <Icon name="save" /> Save to Script
           </button>
           <button
             className="btn-action-primary"
@@ -772,7 +1048,7 @@ export function Blocks({
               position: "relative",
             }}
           >
-            {/* SVG Wires Layer (Mathematically Exact Coordinates) */}
+            {/* SVG Wires Layer (With Interactive Delete Badges) */}
             <svg
               aria-hidden="true"
               style={{
@@ -791,24 +1067,38 @@ export function Blocks({
                 const toB = blocks.find((b) => b.id === conn.toId);
                 if (!fromB || !toB) return null;
 
-                const fromH = getCardHeight(fromB);
+                const isCompactFrom = globalCompact || fromB.isCompact;
+                const fromH = isCompactFrom ? 38 : getCardHeight(fromB);
                 const x1 = fromB.x + CARD_WIDTH / 2;
                 const y1 = fromB.y + fromH;
                 const x2 = toB.x + CARD_WIDTH / 2;
                 const y2 = toB.y;
 
+                const midX = (x1 + x2) / 2;
                 const midY = y1 + Math.max(30, (y2 - y1) * 0.5);
                 const pathD = `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`;
 
                 return (
                   <g key={conn.id} className="wire-group">
+                    {/* Invisible wider hit area for easy clicking */}
+                    <path
+                      d={pathD}
+                      fill="none"
+                      stroke="transparent"
+                      strokeWidth="18"
+                      className="wire-hit-area"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteConnection(conn.id);
+                      }}
+                    />
                     {/* Background glow stroke */}
                     <path
                       d={pathD}
                       fill="none"
                       stroke={conn.color}
                       strokeWidth="6"
-                      strokeOpacity="0.2"
+                      strokeOpacity="0.22"
                     />
                     {/* Main wire line */}
                     <path
@@ -818,6 +1108,19 @@ export function Blocks({
                       strokeWidth="2.5"
                       className="bezier-wire-smooth"
                     />
+                    {/* Delete button at midpoint */}
+                    <g
+                      className="wire-delete-btn"
+                      transform={`translate(${midX}, ${midY})`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        deleteConnection(conn.id);
+                      }}
+                    >
+                      <title>Click to disconnect wire</title>
+                      <circle r="9" fill="#0f172a" stroke={conn.color} strokeWidth="1.5" />
+                      <text textAnchor="middle" dy="3.5" fill="#f8fafc" fontSize="10" fontWeight="bold">✕</text>
+                    </g>
                   </g>
                 );
               })}
@@ -861,8 +1164,8 @@ export function Blocks({
                   <h3 style={{ marginTop: "12px", color: "#f8fafc", fontSize: "16px" }}>
                     Canvas is Empty
                   </h3>
-                  <p style={{ fontSize: "12px", color: "#94a3b8" }}>
-                    Click any + category button above to add forensic nodes, or drag output ports to connect workflows.
+                  <p style={{ fontSize: "12px", color: "#94a3b8", marginTop: "6px" }}>
+                    Click <strong>📥 Sync from Script</strong> to load your current editor procedure, or click category buttons above to add nodes.
                   </p>
                 </div>
               )}
@@ -871,7 +1174,7 @@ export function Blocks({
                 const isCompact = globalCompact || block.isCompact;
                 const isSelected = selectedBlockId === block.id;
                 const isDropTarget = dropTargetBlockId === block.id;
-                const cardH = getCardHeight(block);
+                const cardH = isCompact ? 38 : getCardHeight(block);
                 const catColor = CATEGORY_COLORS[block.category] || "#38bdf8";
 
                 return (
@@ -916,6 +1219,7 @@ export function Blocks({
                             b.id === block.id ? { ...b, x: Math.max(10, startX + dx), y: Math.max(10, startY + dy) } : b
                           )
                         );
+                        setUserHasEdited(true);
                       };
 
                       const onMouseUp = () => {
@@ -927,14 +1231,14 @@ export function Blocks({
                       window.addEventListener("mouseup", onMouseUp);
                     }}
                   >
-                    {/* Top Input Port (All nodes except initial imports) */}
+                    {/* Top Input Port */}
                     {block.capability !== "evidence.import" && (
                       <div
                         className="block-port port-top"
-                        title="Input Port (Drop wire here to connect)"
+                        title="Input Port (Drop upstream wire here)"
                         style={{
                           backgroundColor: isDropTarget ? "#10b981" : "#38bdf8",
-                          boxShadow: isDropTarget ? "0 0 8px #10b981" : "0 0 6px #38bdf8",
+                          boxShadow: isDropTarget ? "0 0 10px #10b981" : "0 0 6px #38bdf8",
                         }}
                       />
                     )}
@@ -965,7 +1269,9 @@ export function Blocks({
 
                       <div className="block-header-info">
                         <span className="block-card-title">{block.title}</span>
-                        <span className="block-card-subtitle">{block.capability}</span>
+                        {!isCompact && (
+                          <span className="block-card-subtitle">{block.capability}</span>
+                        )}
                       </div>
 
                       <div className="block-header-actions">
@@ -973,9 +1279,19 @@ export function Blocks({
                           className="btn-card-menu"
                           onClick={(e) => {
                             e.stopPropagation();
+                            toggleCompact(block.id);
+                          }}
+                          title={isCompact ? "Expand Card" : "Compact Card"}
+                        >
+                          {isCompact ? "▾" : "▴"}
+                        </button>
+                        <button
+                          className="btn-card-menu delete"
+                          onClick={(e) => {
+                            e.stopPropagation();
                             deleteBlock(block.id);
                           }}
-                          title="Delete Node"
+                          title="Delete Block"
                         >
                           ✕
                         </button>
@@ -985,16 +1301,14 @@ export function Blocks({
                     {/* Card Body */}
                     {!isCompact && (
                       <div className="block-card-body">
-                        {/* Import Node: Multi-Source Support */}
+                        {/* Input Node Special UI */}
                         {block.capability === "evidence.import" && (
-                          <div className="card-import-sources">
-                            <span className="sources-label">
-                              Sources ({block.sources?.length ?? 1}):
-                            </span>
-                            {(block.sources ?? ["C:\\Cases\\Evidence"]).map((src, idx) => (
+                          <div className="sources-list-container">
+                            {(block.sources || ["C:\\Cases\\Evidence"]).map((src, idx) => (
                               <input
                                 key={idx}
-                                className="source-path-input"
+                                type="text"
+                                className="source-path-field"
                                 value={src}
                                 onChange={(e) => updateSourcePath(block.id, idx, e.target.value)}
                               />
@@ -1094,7 +1408,7 @@ export function Blocks({
           </div>
         </div>
 
-        {/* Right-Hand "Block Details" Inspector Drawer (Matching Image 2) */}
+        {/* Right-Hand "Block Details" Inspector Drawer */}
         {selectedBlock ? (
           <div className="block-details-drawer">
             <div className="drawer-header">
@@ -1174,7 +1488,8 @@ export function Blocks({
                           <input
                             type="checkbox"
                             checked={selectedBlock.parameters.basicMetadata ?? true}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              setUserHasEdited(true);
                               setBlocks((prev) =>
                                 prev.map((b) =>
                                   b.id === selectedBlock.id
@@ -1187,8 +1502,8 @@ export function Blocks({
                                       }
                                     : b
                                 )
-                              )
-                            }
+                              );
+                            }}
                           />
                           Basic Metadata
                         </label>
@@ -1196,7 +1511,8 @@ export function Blocks({
                           <input
                             type="checkbox"
                             checked={selectedBlock.parameters.sha256 ?? true}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              setUserHasEdited(true);
                               setBlocks((prev) =>
                                 prev.map((b) =>
                                   b.id === selectedBlock.id
@@ -1209,8 +1525,8 @@ export function Blocks({
                                       }
                                     : b
                                 )
-                              )
-                            }
+                              );
+                            }}
                           />
                           Hash (SHA-256)
                         </label>
@@ -1218,7 +1534,8 @@ export function Blocks({
                           <input
                             type="checkbox"
                             checked={selectedBlock.parameters.fileType ?? true}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              setUserHasEdited(true);
                               setBlocks((prev) =>
                                 prev.map((b) =>
                                   b.id === selectedBlock.id
@@ -1231,8 +1548,8 @@ export function Blocks({
                                       }
                                     : b
                                 )
-                              )
-                            }
+                              );
+                            }}
                           />
                           File Type
                         </label>
@@ -1240,7 +1557,8 @@ export function Blocks({
                           <input
                             type="checkbox"
                             checked={selectedBlock.parameters.timestamps ?? true}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              setUserHasEdited(true);
                               setBlocks((prev) =>
                                 prev.map((b) =>
                                   b.id === selectedBlock.id
@@ -1253,32 +1571,10 @@ export function Blocks({
                                       }
                                     : b
                                 )
-                              )
-                            }
+                              );
+                            }}
                           />
                           Timestamps
-                        </label>
-                        <label className="checkbox-row">
-                          <input
-                            type="checkbox"
-                            checked={selectedBlock.parameters.extendedAttributes ?? true}
-                            onChange={(e) =>
-                              setBlocks((prev) =>
-                                prev.map((b) =>
-                                  b.id === selectedBlock.id
-                                    ? {
-                                        ...b,
-                                        parameters: {
-                                          ...b.parameters,
-                                          extendedAttributes: e.target.checked,
-                                        },
-                                      }
-                                    : b
-                                )
-                              )
-                            }
-                          />
-                          Extended Attributes
                         </label>
                       </div>
                     </div>
@@ -1286,12 +1582,15 @@ export function Blocks({
 
                   {selectedBlock.capability === "filter" && (
                     <div className="form-group">
-                      <label className="form-label">Extension Predicates</label>
+                      <label className="form-label">File Extensions</label>
                       <input
-                        className="form-text-input"
-                        value={(selectedBlock.parameters.extensions || []).join(" | ")}
+                        type="text"
+                        className="form-input"
+                        placeholder=".zip, .exe, .bat"
+                        value={(selectedBlock.parameters.extensions || []).join(", ")}
                         onChange={(e) => {
-                          const exts = e.target.value.split("|").map((s) => s.trim());
+                          const exts = e.target.value.split(",").map((s) => s.trim()).filter(Boolean);
+                          setUserHasEdited(true);
                           setBlocks((prev) =>
                             prev.map((b) =>
                               b.id === selectedBlock.id
@@ -1304,14 +1603,139 @@ export function Blocks({
                     </div>
                   )}
 
+                  {selectedBlock.capability === "yara.scan" && (
+                    <div className="form-group">
+                      <label className="form-label">Ruleset File</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={selectedBlock.parameters.ruleset || ""}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setUserHasEdited(true);
+                          setBlocks((prev) =>
+                            prev.map((b) =>
+                              b.id === selectedBlock.id
+                                ? { ...b, parameters: { ...b.parameters, ruleset: val } }
+                                : b
+                            )
+                          );
+                        }}
+                      />
+                    </div>
+                  )}
+
+                  {selectedBlock.capability === "pcap.analyze" && (
+                    <div className="form-group">
+                      <label className="form-label">Network Analysis Settings</label>
+                      <div className="checkbox-group">
+                        <label className="checkbox-row">
+                          <input
+                            type="checkbox"
+                            checked={selectedBlock.parameters.extractDns ?? true}
+                            onChange={(e) => {
+                              setUserHasEdited(true);
+                              setBlocks((prev) =>
+                                prev.map((b) =>
+                                  b.id === selectedBlock.id
+                                    ? { ...b, parameters: { ...b.parameters, extractDns: e.target.checked } }
+                                    : b
+                                )
+                              );
+                            }}
+                          />
+                          Extract DNS Queries
+                        </label>
+                        <label className="checkbox-row">
+                          <input
+                            type="checkbox"
+                            checked={selectedBlock.parameters.detectC2Beacons ?? true}
+                            onChange={(e) => {
+                              setUserHasEdited(true);
+                              setBlocks((prev) =>
+                                prev.map((b) =>
+                                  b.id === selectedBlock.id
+                                    ? { ...b, parameters: { ...b.parameters, detectC2Beacons: e.target.checked } }
+                                    : b
+                                )
+                              );
+                            }}
+                          />
+                          Flag C2 Beacon Ports
+                        </label>
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedBlock.capability === "registry.parse" && (
+                    <div className="form-group">
+                      <label className="form-label">Registry Forensics Settings</label>
+                      <div className="checkbox-group">
+                        <label className="checkbox-row">
+                          <input
+                            type="checkbox"
+                            checked={selectedBlock.parameters.detectAutoStart ?? true}
+                            onChange={(e) => {
+                              setUserHasEdited(true);
+                              setBlocks((prev) =>
+                                prev.map((b) =>
+                                  b.id === selectedBlock.id
+                                    ? { ...b, parameters: { ...b.parameters, detectAutoStart: e.target.checked } }
+                                    : b
+                                )
+                              );
+                            }}
+                          />
+                          Detect Auto-Start Persistence (ASEP)
+                        </label>
+                        <label className="checkbox-row">
+                          <input
+                            type="checkbox"
+                            checked={selectedBlock.parameters.decodeUserAssist ?? true}
+                            onChange={(e) => {
+                              setUserHasEdited(true);
+                              setBlocks((prev) =>
+                                prev.map((b) =>
+                                  b.id === selectedBlock.id
+                                    ? { ...b, parameters: { ...b.parameters, decodeUserAssist: e.target.checked } }
+                                    : b
+                                )
+                              );
+                            }}
+                          />
+                          Decode UserAssist (ROT13)
+                        </label>
+                        <label className="checkbox-row">
+                          <input
+                            type="checkbox"
+                            checked={selectedBlock.parameters.detectUsbDevices ?? true}
+                            onChange={(e) => {
+                              setUserHasEdited(true);
+                              setBlocks((prev) =>
+                                prev.map((b) =>
+                                  b.id === selectedBlock.id
+                                    ? { ...b, parameters: { ...b.parameters, detectUsbDevices: e.target.checked } }
+                                    : b
+                                )
+                              );
+                            }}
+                          />
+                          Extract USBSTOR Hardware
+                        </label>
+                      </div>
+                    </div>
+                  )}
+
                   {selectedBlock.capability === "export" && (
                     <div className="form-group">
                       <label className="form-label">Destination Path</label>
                       <input
-                        className="form-text-input"
-                        value={selectedBlock.parameters.destination || "./Outputs/findings.json"}
+                        type="text"
+                        className="form-input"
+                        value={selectedBlock.parameters.destination || ""}
                         onChange={(e) => {
                           const val = e.target.value;
+                          setUserHasEdited(true);
                           setBlocks((prev) =>
                             prev.map((b) =>
                               b.id === selectedBlock.id
@@ -1323,51 +1747,77 @@ export function Blocks({
                       />
                     </div>
                   )}
-
-                  {/* Output Variable Configuration */}
-                  <div className="form-group" style={{ marginTop: "16px" }}>
-                    <label className="form-label">Output Variable</label>
-                    <input
-                      className="form-text-input"
-                      value={selectedBlock.outputVar}
-                      onChange={(e) => {
-                        const newOut = e.target.value.trim();
-                        setBlocks((prev) =>
-                          prev.map((b) =>
-                            b.id === selectedBlock.id ? { ...b, outputVar: newOut } : b
-                          )
-                        );
-                      }}
-                    />
-                    <span className="output-type-badge">
-                      Type: {selectedBlock.outputType}
-                    </span>
-                  </div>
-
-                  {/* Run Block Action */}
-                  <div style={{ marginTop: "24px" }}>
-                    <button
-                      className="btn-run-single-block"
-                      onClick={() => onRunWorkflow?.(currentDsl)}
-                    >
-                      ▶ Run Block
-                    </button>
-                  </div>
                 </div>
               )}
 
               {activeTab === "general" && (
                 <div className="drawer-section">
                   <div className="form-group">
-                    <label className="form-label">Node Title</label>
-                    <input
-                      className="form-text-input"
-                      value={selectedBlock.title}
+                    <label className="form-label">Block Capability</label>
+                    <select
+                      className="form-select"
+                      value={selectedBlock.capability}
                       onChange={(e) => {
-                        const val = e.target.value;
+                        const newCap = e.target.value;
+                        const def = CAPABILITY_DEFINITIONS[newCap];
+                        if (def) {
+                          setUserHasEdited(true);
+                          setBlocks((prev) =>
+                            prev.map((b) =>
+                              b.id === selectedBlock.id
+                                ? {
+                                    ...b,
+                                    capability: newCap,
+                                    title: def.title,
+                                    category: def.category,
+                                    stage: def.stage,
+                                    outputType: def.outputType,
+                                    parameters: { ...def.defaultParams },
+                                  }
+                                : b
+                            )
+                          );
+                        }
+                      }}
+                    >
+                      <optgroup label="Prepare">
+                        <option value="evidence.import">Import Evidence (evidence.import)</option>
+                        <option value="copy">Materialize Copy (copy)</option>
+                        <option value="hash">Hash Integrity (hash)</option>
+                      </optgroup>
+                      <optgroup label="Examine">
+                        <option value="files.list">Enumerate Files (files.list)</option>
+                        <option value="filter">Filter Artifacts (filter)</option>
+                        <option value="metadata.extract">Extract Metadata (metadata.extract)</option>
+                        <option value="yara.scan">YARA Signature Scan (yara.scan)</option>
+                        <option value="pcap.analyze">PCAP Network Analysis (pcap.analyze)</option>
+                        <option value="registry.parse">Registry Parser (registry.parse)</option>
+                        <option value="prefetch.extract">Prefetch Parser (prefetch.extract)</option>
+                      </optgroup>
+                      <optgroup label="Analysis">
+                        <option value="events.extract">Extract Events (events.extract)</option>
+                        <option value="events.merge">Merge Events (events.merge)</option>
+                        <option value="timeline.build">Build Timeline (timeline.build)</option>
+                        <option value="correlate">Correlate Findings (correlate)</option>
+                      </optgroup>
+                      <optgroup label="Export">
+                        <option value="export">Export Results (export)</option>
+                      </optgroup>
+                    </select>
+                  </div>
+
+                  <div className="form-group">
+                    <label className="form-label">Output Variable Name</label>
+                    <input
+                      type="text"
+                      className="form-input mono"
+                      value={selectedBlock.outputVar}
+                      onChange={(e) => {
+                        const newVar = e.target.value.trim();
+                        setUserHasEdited(true);
                         setBlocks((prev) =>
                           prev.map((b) =>
-                            b.id === selectedBlock.id ? { ...b, title: val } : b
+                            b.id === selectedBlock.id ? { ...b, outputVar: newVar } : b
                           )
                         );
                       }}
@@ -1375,32 +1825,51 @@ export function Blocks({
                   </div>
 
                   <div className="form-group">
-                    <label className="form-label">Stage Group</label>
-                    <span className="stage-pill">{selectedBlock.stage}</span>
-                  </div>
-
-                  <div style={{ marginTop: "20px" }}>
-                    <button
-                      className="btn-delete-node"
-                      onClick={() => deleteBlock(selectedBlock.id)}
+                    <label className="form-label">Stage Assignment</label>
+                    <select
+                      className="form-select"
+                      value={selectedBlock.stage}
+                      onChange={(e) => {
+                        const st = e.target.value as BlockStage;
+                        setUserHasEdited(true);
+                        setBlocks((prev) =>
+                          prev.map((b) =>
+                            b.id === selectedBlock.id ? { ...b, stage: st } : b
+                          )
+                        );
+                      }}
                     >
-                      ✕ Delete Block
-                    </button>
+                      <option value="prepare">prepare</option>
+                      <option value="examine">examine</option>
+                      <option value="analysis">analysis</option>
+                      <option value="export">export</option>
+                    </select>
                   </div>
                 </div>
               )}
             </div>
           </div>
-        ) : showDslPanel ? (
-          /* Right-Side JOCKY DSL Preview (Shown when no block is selected) */
-          <div className="blocks-dsl-preview-panel">
-            <div className="dsl-preview-header">
-              <strong>{scriptName}</strong>
-              <small>{blocks.length} blocks · {connections.length} wires</small>
-            </div>
-            <pre className="dsl-preview-content">{currentDsl}</pre>
-          </div>
         ) : null}
+
+        {/* Rightmost Live DSL Preview Panel */}
+        {showDslPanel && (
+          <div className="blocks-dsl-preview-panel">
+            <div className="dsl-panel-header">
+              <div className="dsl-title-info">
+                <span className="dsl-label">DSL PREVIEW</span>
+                <span className="dsl-filename">{activeDocPath ? activeDocPath.split(/[\\/]/).pop() : "blocks.jocky"}</span>
+              </div>
+              <button
+                className="btn-close-dsl"
+                onClick={() => setShowDslPanel(false)}
+                title="Hide preview"
+              >
+                ✕
+              </button>
+            </div>
+            <pre className="dsl-code-block">{currentDsl || "# Canvas is empty"}</pre>
+          </div>
+        )}
       </div>
     </div>
   );
