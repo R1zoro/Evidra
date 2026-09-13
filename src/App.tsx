@@ -275,6 +275,75 @@ function Workspace({ onSwitchCase }: { onSwitchCase?: () => void }) {
     }
   };
 
+  const openOrFocusDoc = async (targetPathOrName: string) => {
+    if (!targetPathOrName) return;
+    const cleanTarget = targetPathOrName.replace(/\\/g, "/");
+    const targetName = cleanTarget.split("/").pop() || cleanTarget;
+
+    // 1. Check if already open in openDocs
+    const existing = openDocs.find(
+      (d) =>
+        d.path === targetPathOrName ||
+        d.path === cleanTarget ||
+        d.name === targetName ||
+        d.path.endsWith("/" + targetName)
+    );
+    if (existing) {
+      setActiveDocPath(existing.path);
+      setView("JOCKY");
+      return;
+    }
+
+    // 2. Search case tree recursively
+    const findInTree = (nodes: FsNode[]): FsNode | null => {
+      for (const node of nodes) {
+        const cleanNodePath = node.path.replace(/\\/g, "/");
+        if (
+          node.kind === "file" &&
+          (cleanNodePath === cleanTarget ||
+            cleanNodePath === targetPathOrName ||
+            node.name === targetName ||
+            cleanNodePath.endsWith("/" + targetName))
+        ) {
+          return node;
+        }
+        if (node.kind === "directory" && node.children) {
+          const match = findInTree(node.children);
+          if (match) return match;
+        }
+      }
+      return null;
+    };
+
+    const treeMatch = findInTree(tree);
+    if (treeMatch) {
+      await openFileByNode(treeMatch);
+      setView("JOCKY");
+      return;
+    }
+
+    // 3. Fallback: try direct caseFs.readFile
+    try {
+      const content = await caseFs.readFile(cleanTarget);
+      if (content !== null && content !== undefined) {
+        const newDoc: OpenDoc = {
+          path: cleanTarget,
+          name: targetName,
+          content,
+          type: getFileType(targetName),
+        };
+        setOpenDocs((docs) => [...docs, newDoc]);
+        setActiveDocPath(cleanTarget);
+        setView("JOCKY");
+        return;
+      }
+    } catch {
+      // ignore read error
+    }
+
+    setNotice(`Script ${targetName} could not be located in workspace.`);
+  };
+
   const closeDoc = (path: string) => {
     const remaining = openDocs.filter((doc) => doc.path !== path);
     setOpenDocs(remaining);
@@ -615,8 +684,7 @@ function Workspace({ onSwitchCase }: { onSwitchCase?: () => void }) {
               caseName={caseName}
               activeDocPath={activeDocPath}
               onSelectDoc={(path) => {
-                setActiveDocPath(path);
-                setView("JOCKY");
+                void openOrFocusDoc(path);
               }}
               onRunAll={() => {
                 if (activeDoc?.content) void run(activeDoc.content);

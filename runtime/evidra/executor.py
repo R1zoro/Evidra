@@ -308,6 +308,45 @@ def _execute_operation(
         coerced = [coerce_artifact(a) for a in source]
         reg_records = provider.parse_registry(root if isinstance(root, Path) else Path("."), coerced)
         return "RegistryCollection", reg_records, tuple(operation.inputs)
+    if operation.capability in {"memory.analyze", "memory.processes", "ram.analyze"}:
+        source = _resolve_value(operation.inputs, values, workspace_root)
+        if not isinstance(source, list):
+            if isinstance(source, Path) and source.exists():
+                source = provider.list_artifacts(source)
+            else:
+                raise ValueError("memory.analyze requires an artifact collection or path")
+        root = values.get("EVID-001")
+        if not isinstance(root, Path) and workspace_root:
+            root = workspace_root
+        coerced = [coerce_artifact(a) for a in source]
+        mem_records = provider.analyze_memory(root if isinstance(root, Path) else Path("."), coerced)
+        return "MemoryCollection", mem_records, tuple(operation.inputs)
+    if operation.capability in {"evtx.parse", "events.parse_evtx"}:
+        source = _resolve_value(operation.inputs, values, workspace_root)
+        if not isinstance(source, list):
+            if isinstance(source, Path) and source.exists():
+                source = provider.list_artifacts(source)
+            else:
+                raise ValueError("evtx.parse requires an artifact collection or path")
+        root = values.get("EVID-001")
+        if not isinstance(root, Path) and workspace_root:
+            root = workspace_root
+        coerced = [coerce_artifact(a) for a in source]
+        evtx_events = provider.parse_evtx(root if isinstance(root, Path) else Path("."), coerced)
+        return "EventCollection", evtx_events, tuple(operation.inputs)
+    if operation.capability in {"hash.verify", "hashes.verify"}:
+        source = _resolve_value(operation.inputs, values, workspace_root)
+        if not isinstance(source, list):
+            if isinstance(source, Path) and source.exists():
+                source = provider.list_artifacts(source)
+            else:
+                raise ValueError("hash.verify requires an artifact collection or path")
+        root = values.get("EVID-001")
+        if not isinstance(root, Path) and workspace_root:
+            root = workspace_root
+        coerced = [coerce_artifact(a) for a in source]
+        verify_rep = provider.verify_hashes(root if isinstance(root, Path) else Path("."), coerced)
+        return "VerificationReport", verify_rep, tuple(operation.inputs)
     if operation.capability in {"ioc.match", "threat.match"}:
         source = _resolve_value(operation.inputs, values, workspace_root)
         if not isinstance(source, list):
@@ -332,11 +371,19 @@ def _perform_forensic_correlation(input_names: tuple[str, ...], input_values: li
     yara_hits: list[dict[str, object]] = []
     network_records: list[dict[str, object]] = []
     registry_records: list[dict[str, object]] = []
+    memory_records: list[dict[str, object]] = []
+    verify_reports: list[dict[str, object]] = []
 
     for val in input_values:
-        if isinstance(val, list):
+        if isinstance(val, dict) and "verified_records" in val:
+            verify_reports.append(val)
+        elif isinstance(val, dict) and "memory_image" in val:
+            memory_records.append(val)
+        elif isinstance(val, list):
             for item in val:
-                if isinstance(item, ArtifactRecord):
+                if isinstance(item, dict) and "memory_image" in item:
+                    memory_records.append(item)
+                elif isinstance(item, ArtifactRecord):
                     artifacts.append(item)
                 elif isinstance(item, dict) and "rule_name" in item:
                     yara_hits.append(item)
@@ -356,10 +403,110 @@ def _perform_forensic_correlation(input_names: tuple[str, ...], input_values: li
                         filesystem=dict(item.get("filesystem", {})),
                         namespaces=dict(item.get("namespaces", {})),
                     ))
-                elif isinstance(item, dict) and ("timestamp" in item or "kind" in item):
+                elif isinstance(item, dict) and ("timestamp" in item or "kind" in item or "event_id" in item):
                     events.append(item)
 
     findings: list[dict[str, object]] = []
+
+    # 0.0 Volatile Memory Analysis Findings (Attribution: Volatility 3 Specification)
+    for mem in memory_records:
+        for inj in mem.get("injections", []):
+            findings.append({
+                "id": f"FND-{len(findings) + 1:03d}",
+                "title": f"Volatile Memory Code Injection: {inj.get('process_name')} (PID {inj.get('pid')})",
+                "severity": inj.get("severity", "CRITICAL"),
+                "kind": "memory_code_injection",
+                "summary": f"Injected memory page detected in {inj.get('process_name')} at {inj.get('address')} ({inj.get('protection')}) matching {inj.get('shellcode_signature')}.",
+                "confidence": 0.99,
+                "artifact_refs": [str(mem.get("artifact_id", ""))] if mem.get("artifact_id") else [],
+                "event_refs": [],
+                "indicators": [
+                    f"Process: {inj.get('process_name')} (PID {inj.get('pid')})",
+                    f"Virtual Offset: {inj.get('address')}",
+                    f"Protection: {inj.get('protection')}",
+                    f"Signature: {inj.get('shellcode_signature')}",
+                    "Attribution: Volatility 3 Specification",
+                ],
+                "evidence_sources": list(input_names),
+            })
+        for p in mem.get("processes", []):
+            if p.get("is_hidden"):
+                findings.append({
+                    "id": f"FND-{len(findings) + 1:03d}",
+                    "title": f"DKOM Hidden Process Detected: {p.get('image_name')} (PID {p.get('pid')})",
+                    "severity": "CRITICAL",
+                    "kind": "dkom_hidden_process",
+                    "summary": f"Process {p.get('image_name')} (PID {p.get('pid')}) unlinked from OS ActiveProcessLinks to evade detection.",
+                    "confidence": 0.98,
+                    "artifact_refs": [str(mem.get("artifact_id", ""))] if mem.get("artifact_id") else [],
+                    "event_refs": [],
+                    "indicators": [
+                        f"Hidden Process: {p.get('image_name')}",
+                        f"PID: {p.get('pid')}",
+                        f"DKOM Alert: {p.get('dkom_alert')}",
+                        "Attribution: Volatility 3 Specification",
+                    ],
+                    "evidence_sources": list(input_names),
+                })
+        for lin in mem.get("suspicious_lineages", []):
+            findings.append({
+                "id": f"FND-{len(findings) + 1:03d}",
+                "title": f"Anomalous Process Lineage: {lin.get('parent_name')} -> {lin.get('process_name')}",
+                "severity": lin.get("severity", "CRITICAL"),
+                "kind": "anomalous_process_lineage",
+                "summary": lin.get("alert", "Anomalous parent-child process lineage observed in memory space."),
+                "confidence": 0.95,
+                "artifact_refs": [str(mem.get("artifact_id", ""))] if mem.get("artifact_id") else [],
+                "event_refs": [],
+                "indicators": [
+                    f"Parent: {lin.get('parent_name')} (PPID {lin.get('ppid')})",
+                    f"Child: {lin.get('process_name')} (PID {lin.get('pid')})",
+                    f"Alert: {lin.get('alert')}",
+                    "Attribution: Volatility 3 Specification",
+                ],
+                "evidence_sources": list(input_names),
+            })
+
+    # 0.05 Evidence Hash Verification (Attribution: NIST SP 800-86 Specification)
+    for vrep in verify_reports:
+        if vrep.get("status") == "CONTAMINATED" or vrep.get("mismatch_count", 0) > 0:
+            findings.append({
+                "id": f"FND-{len(findings) + 1:03d}",
+                "title": "Evidence Hash Tamper / Contamination Alert",
+                "severity": "CRITICAL",
+                "kind": "evidence_contamination",
+                "summary": f"Cryptographic audit failed: {vrep.get('mismatch_count')} artifact(s) showed hash discrepancies against chain-of-custody baseline.",
+                "confidence": 1.0,
+                "artifact_refs": [],
+                "event_refs": [],
+                "indicators": [
+                    f"Status: {vrep.get('status')}",
+                    f"Mismatches: {vrep.get('mismatch_count')}",
+                    "Attribution: NIST SP 800-86 Specification",
+                ],
+                "evidence_sources": list(input_names),
+            })
+
+    # 0.08 Windows Event Logs Anti-Forensics (Attribution: Eric Zimmerman EvtxECmd)
+    for evt in events:
+        if evt.get("event_id") == 1102 or "audit log was intentionally cleared" in str(evt.get("description", "")).lower():
+            findings.append({
+                "id": f"FND-{len(findings) + 1:03d}",
+                "title": "Anti-Forensics Alert: Security Audit Log Cleared (Event 1102)",
+                "severity": "CRITICAL",
+                "kind": "anti_forensics_log_cleared",
+                "summary": "Windows security event log was intentionally cleared by an administrator account to conceal intruder activity.",
+                "confidence": 0.99,
+                "artifact_refs": [str(evt.get("artifact_id", ""))] if evt.get("artifact_id") else [],
+                "event_refs": [str(evt.get("id", ""))],
+                "indicators": [
+                    "Event ID: 1102",
+                    "Channel: Security",
+                    "Description: Audit Log Cleared",
+                    "Attribution: Eric Zimmerman EvtxECmd",
+                ],
+                "evidence_sources": list(input_names),
+            })
 
     # 0. YARA Threat Signatures (Attribution: VirusTotal YARA)
     for hit in yara_hits:

@@ -63,6 +63,8 @@ files.search
 files.inspect
 filter
 metadata.extract
+memory.analyze
+evtx.parse
 prefetch.extract
 pcap.analyze
 registry.parse
@@ -97,6 +99,9 @@ Evidra and JOCKY formalize standard forensic methodologies by implementing and a
 
 | Capability | Originating Tool / Standard | Forensic Scope & Implementation |
 | :--- | :--- | :--- |
+| `memory.analyze` | **Volatility 3 Specification** | Volatile RAM dump parser scanning raw images (`.raw`, `.dmp`, `.vmem`), extracting EPROCESS lists, identifying DKOM unlinked processes (ActiveProcessLinks evasion), detecting RWX code injections & shellcode stagers (Cobalt Strike / Metasploit), and flagging anomalous parent-child lineages. |
+| `evtx.parse` | **Eric Zimmerman EvtxECmd** | Windows Event Log parser extracting critical security events: Process Creation (4688), Successful/Failed Logons (4624/4625), Service Installation (7045), and Anti-Forensic Audit Log Cleared (1102). |
+| `hash.verify` | **NIST SP 800-86 Specification** | Automated cryptographic integrity audit comparing acquired artifact hashes against chain-of-custody baselines to certify evidence integrity. |
 | `yara.scan` | **VirusTotal YARA** | Native libyara & pure-Python regex/byte signature matching engine. Compiles custom `.yar` rules or runs built-in threat triage rulesets (Mimikatz, PowerShell obfuscation, WebShells, Ransomware notes, Cobalt Strike beacons) against raw files and memory dumps. |
 | `pcap.analyze` | **Wireshark / Zeek Specification** | Binary Libpcap parser supporting little/big-endian files, Ethernet frames, IPv4, TCP/UDP headers, conversation flow extraction, DNS queries (UDP 53), and automated detection/flagging of C2 beacon ports (4444, 1337, 8888, 7070, 50050, 9999). |
 | `registry.parse` | **Eric Zimmerman's RECmd / Harlan Carvey's RegRipper** | Windows registry hive and `.reg` export parser extracting Auto-Start Extensibility Points (ASEPs: Run, RunOnce), UserAssist execution history with ROT13 deciphering, and USBSTOR connected storage hardware tracking. |

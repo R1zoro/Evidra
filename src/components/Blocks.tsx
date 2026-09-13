@@ -148,6 +148,39 @@ export const CAPABILITY_DEFINITIONS: Record<
       detectUsbDevices: true,
     },
   },
+  "memory.analyze": {
+    title: "Volatile Memory Analysis",
+    category: "examination",
+    stage: "examine",
+    outputType: "MemoryCollection",
+    description: "Analyzes raw RAM dumps for active processes, DKOM hidden processes, and RWX code injections (Volatility 3).",
+    defaultParams: {
+      detectDkomHidden: true,
+      scanRwxInjections: true,
+      checkProcessLineage: true,
+    },
+  },
+  "evtx.parse": {
+    title: "Windows Event Logs (EVTX)",
+    category: "examination",
+    stage: "examine",
+    outputType: "EventCollection",
+    description: "Parses Windows security event logs (4688 process creation, 4624 logons, 7045 services, 1102 log cleared).",
+    defaultParams: {
+      parseProcessCreations: true,
+      parseLogonEvents: true,
+    },
+  },
+  "hash.verify": {
+    title: "NIST Hash Verification",
+    category: "preparation",
+    stage: "prepare",
+    outputType: "VerificationReport",
+    description: "Cryptographically audits evidence against baseline digests for NIST SP 800-86 chain of custody.",
+    defaultParams: {
+      algorithm: "SHA-256",
+    },
+  },
   "events.extract": {
     title: "Extract Events",
     category: "analysis",
@@ -342,6 +375,24 @@ export function parseDslToBlocks(dsl: string): { blocks: CanvasBlock[]; connecti
       cat = "examination";
       stage = "examine";
       const match = rhs.match(/registry\.parse\s+([^\s]+)/);
+      if (match) inputVars = [match[1]];
+    } else if (rhs.startsWith("memory.analyze") || trimmed.startsWith("memory.analyze")) {
+      cap = "memory.analyze";
+      cat = "examination";
+      stage = "examine";
+      const match = rhs.match(/memory\.analyze\s+([^\s]+)/);
+      if (match) inputVars = [match[1]];
+    } else if (rhs.startsWith("evtx.parse") || trimmed.startsWith("evtx.parse")) {
+      cap = "evtx.parse";
+      cat = "examination";
+      stage = "examine";
+      const match = rhs.match(/evtx\.parse\s+([^\s]+)/);
+      if (match) inputVars = [match[1]];
+    } else if (rhs.startsWith("hash.verify") || trimmed.startsWith("hash.verify")) {
+      cap = "hash.verify";
+      cat = "preparation";
+      stage = "prepare";
+      const match = rhs.match(/hash\.verify\s+([^\s]+)/);
       if (match) inputVars = [match[1]];
     } else if (rhs.startsWith("events.extract") || trimmed.startsWith("events.extract")) {
       cap = "events.extract";
@@ -579,6 +630,15 @@ export function Blocks({
           } else if (b.capability === "registry.parse") {
             const inVar = b.inputVars[0] || "reg_files";
             lines.push(`    ${b.outputVar} = registry.parse ${inVar}`);
+          } else if (b.capability === "memory.analyze") {
+            const inVar = b.inputVars[0] || "artifacts";
+            lines.push(`    ${b.outputVar} = memory.analyze ${inVar}`);
+          } else if (b.capability === "evtx.parse") {
+            const inVar = b.inputVars[0] || "artifacts";
+            lines.push(`    ${b.outputVar} = evtx.parse ${inVar}`);
+          } else if (b.capability === "hash.verify") {
+            const inVar = b.inputVars[0] || "working";
+            lines.push(`    ${b.outputVar} = hash.verify ${inVar}`);
           } else if (b.capability === "events.extract") {
             const inVar = b.inputVars[0] || "suspicious";
             lines.push(`    ${b.outputVar} = events.extract from ${inVar}`);
@@ -960,6 +1020,9 @@ export function Blocks({
               title="Add Forensic Capability Block"
             >
               <option value="" disabled>+ Forensic Tool ▾</option>
+              <option value="memory.analyze">Volatility 3 (memory.analyze)</option>
+              <option value="evtx.parse">EvtxECmd Logs (evtx.parse)</option>
+              <option value="hash.verify">NIST SP 800-86 (hash.verify)</option>
               <option value="yara.scan">VirusTotal YARA (yara.scan)</option>
               <option value="pcap.analyze">Wireshark/Zeek (pcap.analyze)</option>
               <option value="registry.parse">RECmd/RegRipper (registry.parse)</option>
@@ -1784,11 +1847,14 @@ export function Blocks({
                         <option value="evidence.import">Import Evidence (evidence.import)</option>
                         <option value="copy">Materialize Copy (copy)</option>
                         <option value="hash">Hash Integrity (hash)</option>
+                        <option value="hash.verify">NIST Hash Verification (hash.verify)</option>
                       </optgroup>
                       <optgroup label="Examine">
                         <option value="files.list">Enumerate Files (files.list)</option>
                         <option value="filter">Filter Artifacts (filter)</option>
                         <option value="metadata.extract">Extract Metadata (metadata.extract)</option>
+                        <option value="memory.analyze">Volatile Memory (memory.analyze)</option>
+                        <option value="evtx.parse">Windows Event Logs (evtx.parse)</option>
                         <option value="yara.scan">YARA Signature Scan (yara.scan)</option>
                         <option value="pcap.analyze">PCAP Network Analysis (pcap.analyze)</option>
                         <option value="registry.parse">Registry Parser (registry.parse)</option>

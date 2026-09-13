@@ -87,13 +87,86 @@ const JOCKY_SUGGESTIONS: SuggestionItem[] = [
   { label: "yara.scan", kind: "capability", insertText: 'yara_hits = yara.scan suspicious with "threat_triage.yar"', detail: "VirusTotal YARA signature threat scan" },
   { label: "pcap.analyze", kind: "capability", insertText: 'network = pcap.analyze pcap_evidence', detail: "Wireshark / Zeek network flow & C2 analysis" },
   { label: "registry.parse", kind: "capability", insertText: 'reg = registry.parse reg_evidence', detail: "RECmd / RegRipper registry persistence analysis" },
+  { label: "memory.analyze", kind: "capability", insertText: 'memory = memory.analyze artifacts', detail: "Volatility 3 volatile memory dump analysis" },
+  { label: "evtx.parse", kind: "capability", insertText: 'evtx_logs = evtx.parse artifacts', detail: "Eric Zimmerman EvtxECmd Windows event log parser" },
+  { label: "hash.verify", kind: "capability", insertText: 'integrity = hash.verify working', detail: "NIST SP 800-86 cryptographic hash verification" },
   { label: "ioc.match", kind: "capability", insertText: 'threats = ioc.match artifacts', detail: "Match threat intelligence indicators" },
   { label: "correlate", kind: "capability", insertText: 'findings = correlate(suspicious, events, timeline)', detail: "Correlate artifacts and events into findings" },
   { label: "export", kind: "capability", insertText: 'export findings > "./Outputs/findings.json"', detail: "Export deliverables to disk" },
   { label: "hash", kind: "capability", insertText: 'hashes = hash artifacts', detail: "Compute SHA-256 integrity digests" },
 ];
 
+export const CAPABILITY_SNIPPETS = [
+  {
+    name: "Volatile Memory Triage (memory.analyze)",
+    snippet: `    mem_dumps = filter(extension == ".raw" | ".dmp" | ".vmem" | ".bin" | ".mem") from artifacts\n    memory = memory.analyze mem_dumps\n`,
+  },
+  {
+    name: "Windows Event Logs (evtx.parse)",
+    snippet: `    evtx_logs = filter(extension == ".evtx" | ".xml") from artifacts\n    events_parsed = evtx.parse evtx_logs\n`,
+  },
+  {
+    name: "NIST Hash Verification (hash.verify)",
+    snippet: `    verified_hashes = hash.verify working\n`,
+  },
+  {
+    name: "YARA Threat Scan (yara.scan)",
+    snippet: `    suspicious = filter(extension == ".exe" | ".dll" | ".ps1") from artifacts\n    yara_hits = yara.scan suspicious with "default_triage.yar"\n`,
+  },
+  {
+    name: "PCAP Network Analysis (pcap.analyze)",
+    snippet: `    pcap_files = filter(extension == ".pcap" | ".cap" | ".pcapng") from artifacts\n    net_traffic = pcap.analyze pcap_files\n`,
+  },
+  {
+    name: "Windows Registry Forensics (registry.parse)",
+    snippet: `    reg_hives = filter(extension == ".reg" | ".dat" | ".hive") from artifacts\n    reg_persistence = registry.parse reg_hives\n`,
+  },
+  {
+    name: "Prefetch Execution History (prefetch.extract)",
+    snippet: `    pf_files = filter(extension == ".pf") from artifacts\n    exec_history = prefetch.extract pf_files\n`,
+  },
+  {
+    name: "Timeline Reconstruction (timeline.build)",
+    snippet: `    events = events.extract from artifacts\n    timeline = timeline.build from events\n`,
+  },
+  {
+    name: "Cross-Vector Threat Correlation (correlate)",
+    snippet: `    findings = correlate(suspicious, yara_hits, net_traffic, reg_persistence, timeline)\n`,
+  },
+  {
+    name: "Export Deliverable JSON (export)",
+    snippet: `    export findings > "./Outputs/findings_report.json"\n`,
+  },
+];
+
 export const FORENSIC_TEMPLATES = [
+  {
+    name: "Memory Forensics & Volatile Triage",
+    lineage: "Volatility 3 Specification",
+    code: `# JOCKY Memory Forensics & Volatile Triage Procedure
+# Specification: Volatility 3 Specification
+
+[prepare]
+    source = evidence.import "Evidence"
+    working = copy source as "memory_working"
+    verify = hash.verify working
+
+[examine]
+    artifacts = files.list working
+    mem_files = filter(extension == ".raw" | ".dmp" | ".vmem" | ".mem" | ".bin") from artifacts
+    memory = memory.analyze mem_files
+    evtx_files = filter(extension == ".evtx" | ".xml") from artifacts
+    events = evtx.parse evtx_files
+
+[analysis]
+    timeline = timeline.build from events
+    findings = correlate(memory, events, timeline, verify)
+
+[export]
+    export memory > "./Outputs/memory_triage.json"
+    export findings > "./Outputs/volatile_incident_report.json"
+`,
+  },
   {
     name: "Incident Triage (Full Spectrum)",
     lineage: "Multi-Tool Spectrum",
@@ -493,24 +566,49 @@ export function FileEditorView({
               }}
               value=""
               onChange={(e) => {
-                const tmpl = FORENSIC_TEMPLATES.find((t) => t.name === e.target.value);
-                if (!tmpl || !doc) return;
-                if (doc.content.trim().length > 0) {
-                  if (!window.confirm(`Load template "${tmpl.name}"?\n(This will replace current editor content)`)) {
-                    return;
-                  }
+                const val = e.target.value;
+                if (!val || !doc) return;
+                if (val.startsWith("snippet:")) {
+                  const snipName = val.replace("snippet:", "");
+                  const snip = CAPABILITY_SNIPPETS.find((s) => s.name === snipName);
+                  if (!snip) return;
+                  const start = textareaRef.current?.selectionStart ?? doc.content.length;
+                  const end = textareaRef.current?.selectionEnd ?? doc.content.length;
+                  const newContent = doc.content.substring(0, start) + (start > 0 && !doc.content.substring(0, start).endsWith("\n") ? "\n" : "") + snip.snippet + doc.content.substring(end);
+                  pushUndo(newContent);
+                  onChange(newContent);
+                  return;
                 }
-                pushUndo(tmpl.code);
-                onChange(tmpl.code);
+                if (val.startsWith("template:")) {
+                  const tmplName = val.replace("template:", "");
+                  const tmpl = FORENSIC_TEMPLATES.find((t) => t.name === tmplName);
+                  if (!tmpl) return;
+                  if (doc.content.trim().length > 0) {
+                    if (!window.confirm(`Load template "${tmpl.name}"?\n(This will replace current editor content)`)) {
+                      return;
+                    }
+                  }
+                  pushUndo(tmpl.code);
+                  onChange(tmpl.code);
+                }
               }}
-              title="Insert Forensic Template"
+              title="Insert Forensic Snippet or Load Full Template"
             >
-              <option value="" disabled>📋 Templates ▾</option>
-              {FORENSIC_TEMPLATES.map((tmpl) => (
-                <option key={tmpl.name} value={tmpl.name} style={{ background: "#0b1118", color: "#f8fafc" }}>
-                  {tmpl.name} ({tmpl.lineage})
-                </option>
-              ))}
+              <option value="" disabled>⚡ Snippets & Templates ▾</option>
+              <optgroup label="── Insert Snippet at Cursor ──">
+                {CAPABILITY_SNIPPETS.map((snip) => (
+                  <option key={snip.name} value={`snippet:${snip.name}`} style={{ background: "#0b1118", color: "#38bdf8" }}>
+                    + {snip.name}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="── Load Full Template (Replaces) ──">
+                {FORENSIC_TEMPLATES.map((tmpl) => (
+                  <option key={tmpl.name} value={`template:${tmpl.name}`} style={{ background: "#0b1118", color: "#f8fafc" }}>
+                    📄 {tmpl.name} ({tmpl.lineage})
+                  </option>
+                ))}
+              </optgroup>
             </select>
           )}
           <button className="btn-secondary" onClick={() => void onSave()} title="Save file (Ctrl+S)">

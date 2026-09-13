@@ -160,6 +160,24 @@ export function Docs() {
               <td><code>reg = registry.parse reg_hives</code></td>
             </tr>
             <tr>
+              <td><code>memory.analyze</code></td>
+              <td><code>ArtifactCollection</code></td>
+              <td><code>MemoryCollection</code></td>
+              <td><code>mem = memory.analyze mem_dumps</code></td>
+            </tr>
+            <tr>
+              <td><code>evtx.parse</code></td>
+              <td><code>ArtifactCollection</code></td>
+              <td><code>EventCollection</code></td>
+              <td><code>events = evtx.parse evtx_logs</code></td>
+            </tr>
+            <tr>
+              <td><code>hash.verify</code></td>
+              <td><code>EvidenceReference</code> | <code>ArtifactCollection</code></td>
+              <td><code>VerificationReport</code></td>
+              <td><code>verify = hash.verify working</code></td>
+            </tr>
+            <tr>
               <td><code>events.extract</code></td>
               <td><code>ArtifactCollection</code></td>
               <td><code>EventCollection</code></td>
@@ -240,6 +258,21 @@ export function Docs() {
               <td><code>correlate</code></td>
               <td><strong style={{ color: "#d8b4fe" }}>Sigma Rules / Splunk SPL</strong></td>
               <td>Cross-correlates anomalous execution events, suspicious archive members, network C2 beacons, registry persistence, and YARA hits into structured threat findings.</td>
+            </tr>
+            <tr>
+              <td><code>memory.analyze</code></td>
+              <td><strong style={{ color: "#f43f5e" }}>Volatility 3 Specification</strong></td>
+              <td>Scans volatile RAM dumps (.raw, .dmp, .vmem), extracts EPROCESS process listings, identifies DKOM unlinked processes (ActiveProcessLinks evasion), detects RWX code injection & shellcode stagers (Cobalt Strike / Metasploit), and flags anomalous parent-child lineages.</td>
+            </tr>
+            <tr>
+              <td><code>evtx.parse</code></td>
+              <td><strong style={{ color: "#38bdf8" }}>Eric Zimmerman EvtxECmd</strong></td>
+              <td>Parses Windows Event Logs (.evtx) extracting critical security events: Process Creation (4688), Successful/Failed Logons (4624/4625), Service Installation (7045), and Anti-Forensic Audit Log Cleared (1102).</td>
+            </tr>
+            <tr>
+              <td><code>hash.verify</code></td>
+              <td><strong style={{ color: "#34d399" }}>NIST SP 800-86 Specification</strong></td>
+              <td>Performs cryptographic evidence integrity audits comparing SHA-256 digests against chain-of-custody baselines to generate certified verification reports.</td>
             </tr>
           </tbody>
         </table>

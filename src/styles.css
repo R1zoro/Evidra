@@ -4646,3 +4646,126 @@ button.btn-card-menu {
   background: #131d35;
   transform: translateY(-1px);
 }
+
+/* =========================================================================
+   FORENSIC SUITE POLISH - BUTTON STYLES, EXPLORER HOVER & RESPONSIVE LAYOUT
+   ========================================================================= */
+
+/* Tab Close 'x' Button - Remove browser white-box buttonface */
+.tab-close,
+button.tab-close {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  outline: none !important;
+  color: #64748b !important;
+  margin-left: 6px;
+  padding: 0 4px !important;
+  border-radius: 3px;
+  font-size: 14px !important;
+  line-height: 1 !important;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tab-close:hover,
+button.tab-close:hover {
+  background: rgba(244, 63, 94, 0.2) !important;
+  color: #f43f5e !important;
+}
+
+/* Case Explorer - File & Folder Hover Highlighting */
+.tree-row {
+  min-height: 26px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  color: #94a3b8;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.tree-row:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+  color: #f8fafc !important;
+}
+
+.tree-row.selected {
+  background: rgba(56, 189, 248, 0.16) !important;
+  color: #38bdf8 !important;
+}
+
+/* Sleek Undo / Redo & Secondary Buttons in Editor */
+.editor-toolbar-actions .btn-secondary {
+  background: #1e293b !important;
+  border: 1px solid #334155 !important;
+  color: #cbd5e1 !important;
+  padding: 3px 8px !important;
+  font-size: 11px !important;
+  border-radius: 4px !important;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.editor-toolbar-actions .btn-secondary:hover:not(:disabled) {
+  background: #334155 !important;
+  color: #f8fafc !important;
+  border-color: #38bdf8 !important;
+}
+
+.editor-toolbar-actions .btn-secondary:disabled {
+  opacity: 0.35 !important;
+  cursor: not-allowed;
+  border-color: #1e293b !important;
+}
+
+/* Hash & Path Copy Buttons */
+.hash-copy-btn,
+button.hash-copy-btn {
+  background: #1e293b !important;
+  border: 1px solid #334155 !important;
+  color: #94a3b8 !important;
+  padding: 3px 8px !important;
+  border-radius: 4px !important;
+  font-size: 10px !important;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.15s ease;
+}
+
+.hash-copy-btn:hover,
+button.hash-copy-btn:hover {
+  background: #334155 !important;
+  color: #f8fafc !important;
+  border-color: #38bdf8 !important;
+}
+
+/* Window Resizing & Responsive Toolbar Safeguards */
+.editor-toolbar {
+  min-width: 0 !important;
+  overflow-x: auto !important;
+}
+
+.editor-toolbar-actions {
+  flex-shrink: 0 !important;
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.results-run-bar {
+  min-width: 0 !important;
+  padding: 6px 10px !important;
+}
+
+.run-select-dropdown {
+  max-width: 170px !important;
+}

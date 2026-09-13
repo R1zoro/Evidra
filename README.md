@@ -62,12 +62,17 @@ Typed forensic renderers for intermediate and final results:
 - **`YaraResults`**: Signature match tables detailing matched rules, tags, target paths, offsets, and hex/byte strings.
 - **`NetworkCollection`**: Network flow analysis rendering IP conversation endpoints, protocols (TCP/UDP), packet counts, DNS query resolution tables, and flagged C2 beacon ports.
 - **`RegistryCollection`**: Categorized registry findings highlighting Auto-Start Extensibility Points (ASEPs: Run, RunOnce), decoded ROT13 UserAssist execution histories, and USBSTOR device histories.
+- **`MemoryCollection`**: Volatile memory inspection rendering active process tables (PID, PPID, virtual offset, threads, start time), DKOM hidden unlinked process alerts, and RWX code injection / shellcode stager tables.
+- **`VerificationReport`**: Formal NIST SP 800-86 cryptographic integrity audit report (`VERIFIED` vs `CONTAMINATED`) with artifact SHA-256 match tallies.
 - **`EventCollection / Timeline`**: Chronological timeline stream with severity level badges (`INFO`, `WARN`, `ERROR`), event kinds, and timestamps.
 - **`FindingCollection`**: Correlated forensic cards with severity indicators, confidence meters, and artifact/event references.
 - **`Export`**: Verification of disk persistence, record count, and SHA-256 file digest.
 
 ### 6. Forensic Tool Lineage & Industry Standards Attribution
 Evidra implements and formalizes methodologies from premier open-source and industry-standard forensic tools:
+- **Volatility 3 Specification** (`memory.analyze` / `memory.processes`): Scans raw memory images (`.raw`, `.dmp`, `.vmem`, `.mem`), carves EPROCESS structures, identifies DKOM unlinked processes (ActiveProcessLinks evasion), detects RWX code injections & shellcode stagers (Cobalt Strike / Metasploit), and flags anomalous parent-child execution lineages.
+- **Eric Zimmerman EvtxECmd** (`evtx.parse`): Windows Event Log parser extracting critical security events: Process Creation (4688), Successful/Failed Logons (4624/4625), Service Installation (7045), and Anti-Forensic Audit Log Cleared (1102).
+- **NIST SP 800-86 Specification** (`hash.verify`): Automated cryptographic integrity audit comparing acquired artifact hashes against chain-of-custody baselines to certify evidence integrity.
 - **VirusTotal YARA** (`yara.scan`): Signature matching engine for threat indicators, custom `.yar` rules, and built-in incident response triage rulesets (Mimikatz, PowerShell obfuscation, WebShells, Ransomware notes).
 - **Wireshark / Zeek Network Analysis Specification** (`pcap.analyze`): Binary Libpcap parser supporting little-endian and big-endian PCAP captures, Ethernet frames, IPv4, TCP/UDP headers, conversation flows, DNS request extraction, and automated detection/flagging of C2 beacon ports (4444, 1337, 8888, 7070, 50050, 9999).
 - **Eric Zimmerman RECmd / Harlan Carvey RegRipper** (`registry.parse`): Windows registry hive and `.reg` export parser extracting Auto-Start Extensibility Points (ASEPs: Run, RunOnce), UserAssist execution history with ROT13 deciphering, and USBSTOR connected storage hardware tracking.

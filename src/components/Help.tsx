@@ -165,6 +165,27 @@ export function Help() {
               Multi-branch correlation matrix synthesizing execution events, suspicious archives, network C2 beacons, and YARA hits into actionable findings.
             </p>
           </div>
+
+          <div style={{ background: "#0b1118", border: "1px solid #1e293b", borderRadius: "8px", padding: "14px" }}>
+            <strong style={{ color: "#f43f5e", fontSize: "13px" }}>Volatility 3 Specification (memory.analyze)</strong>
+            <p style={{ color: "#94a3b8", fontSize: "11px", margin: "6px 0 0", lineHeight: 1.5 }}>
+              Volatile memory dump parsing, EPROCESS extraction, DKOM hidden process unlinking detection, and RWX shellcode / Reflective DLL injection triage.
+            </p>
+          </div>
+
+          <div style={{ background: "#0b1118", border: "1px solid #1e293b", borderRadius: "8px", padding: "14px" }}>
+            <strong style={{ color: "#38bdf8", fontSize: "13px" }}>Eric Zimmerman EvtxECmd (evtx.parse)</strong>
+            <p style={{ color: "#94a3b8", fontSize: "11px", margin: "6px 0 0", lineHeight: 1.5 }}>
+              Windows Event Log parser for process creations (4688), network/RDP logons (4624/4625), service installation (7045), and log clearance alerts (1102).
+            </p>
+          </div>
+
+          <div style={{ background: "#0b1118", border: "1px solid #1e293b", borderRadius: "8px", padding: "14px" }}>
+            <strong style={{ color: "#34d399", fontSize: "13px" }}>NIST SP 800-86 Specification (hash.verify)</strong>
+            <p style={{ color: "#94a3b8", fontSize: "11px", margin: "6px 0 0", lineHeight: 1.5 }}>
+              Cryptographic integrity verification comparing SHA-256 digests against chain-of-custody baselines to certify evidence integrity.
+            </p>
+          </div>
         </div>
       </section>
     </div>

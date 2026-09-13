@@ -407,7 +407,7 @@ export function FileTree({
     <div className="file-tree" style={{ paddingLeft: depth === 0 ? 0 : 12 }}>
       {nodes.map((node) => {
         const isDir = node.kind === "directory";
-        const isExpanded = expanded[node.path] ?? false;
+        const isExpanded = expanded[node.path] ?? (node.name.toLowerCase() === "outputs");
 
         return (
           <div key={node.path} className="tree-node">

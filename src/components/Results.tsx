@@ -254,6 +254,17 @@ function renderSpecializedResult(
     return <RegistryCollectionView items={value} />;
   }
 
+  // 3g. MemoryCollection Renderer (Attribution: Volatility 3 Specification)
+  if ((type === "MemoryCollection" || type === "MemoryDump") && (Array.isArray(value) || (typeof value === "object" && value !== null))) {
+    const memArray = Array.isArray(value) ? value : [value];
+    return <MemoryCollectionView items={memArray} />;
+  }
+
+  // 3h. VerificationReport Renderer (Attribution: NIST SP 800-86)
+  if (type === "VerificationReport" && typeof value === "object" && value !== null) {
+    return <VerificationReportView report={value} copyToClipboard={copyToClipboard} copiedHash={copiedHash} />;
+  }
+
   // 4. FindingCollection Renderer
   if (type === "FindingCollection" && Array.isArray(value)) {
     return (
@@ -865,17 +876,6 @@ function ExportResultView({
           <code>{exp.destination || exp.relative_path}</code>
         </div>
         <div>
-          <small>Disk Path:</small>
-          <code className="path-code">{exp.file_path}</code>
-          <button
-            className="hash-copy-btn inline"
-            style={{ marginLeft: "6px" }}
-            onClick={() => copyToClipboard(exp.file_path || "")}
-          >
-            <small>{copiedHash === exp.file_path ? "Copied" : "Copy Path"}</small>
-          </button>
-        </div>
-        <div>
           <small>Records Exported:</small>
           <strong>{exp.records_count ?? 1}</strong>
         </div>
@@ -888,6 +888,23 @@ function ExportResultView({
                 : `${(exp.size_bytes / 1024).toFixed(1)} KB`
               : "-"}
           </strong>
+        </div>
+        <div>
+          <small>Status:</small>
+          <span className="run-status-badge completed" style={{ display: "inline-block" }}>EXPORTED</span>
+        </div>
+        <div style={{ gridColumn: "span 2", display: "flex", flexDirection: "column", gap: "4px" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <small>Disk Path:</small>
+            <button
+              className="hash-copy-btn"
+              onClick={() => copyToClipboard(exp.file_path || "")}
+              title="Copy absolute path to clipboard"
+            >
+              <small>{copiedHash === exp.file_path ? "✓ Copied" : "Copy Path"}</small>
+            </button>
+          </div>
+          <code className="path-code" style={{ wordBreak: "break-all", whiteSpace: "normal" }}>{exp.file_path}</code>
         </div>
         <div style={{ gridColumn: "span 2" }}>
           <small>SHA-256 Digest:</small>
@@ -1058,6 +1075,273 @@ function RegistryCollectionView({ items }: { items: any[] }) {
                   <span className={`level-pill ${String(reg.severity || "info").toLowerCase()}`}>
                     {reg.severity || "INFO"}
                   </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function MemoryCollectionView({ items }: { items: any[] }) {
+  const [filter, setFilter] = useState("");
+  const [activeTab, setActiveTab] = useState<"processes" | "injections" | "lineages">("processes");
+
+  const allProcesses = items.flatMap((i) => i.processes || []);
+  const allInjections = items.flatMap((i) => i.injections || []);
+  const allLineages = items.flatMap((i) => i.suspicious_lineages || []);
+  const hiddenCount = allProcesses.filter((p) => p.is_hidden).length;
+
+  const filteredProcesses = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return allProcesses;
+    return allProcesses.filter(
+      (p) =>
+        String(p.pid).includes(q) ||
+        String(p.ppid).includes(q) ||
+        p.image_name?.toLowerCase().includes(q) ||
+        p.virtual_offset?.toLowerCase().includes(q)
+    );
+  }, [allProcesses, filter]);
+
+  return (
+    <div className="specialized-artifact-view">
+      <div className="result-summary-bar">
+        <span>Memory Images: <strong>{items.length}</strong></span>
+        <span>Active Processes: <strong>{allProcesses.length}</strong></span>
+        {hiddenCount > 0 && (
+          <span style={{ color: "#ef4444", fontWeight: 700 }}>
+            🚨 {hiddenCount} DKOM Hidden
+          </span>
+        )}
+        {allInjections.length > 0 && (
+          <span style={{ color: "#f43f5e", fontWeight: 700 }}>
+            💉 {allInjections.length} Injections (RWX)
+          </span>
+        )}
+        <span style={{ color: "#38bdf8", fontSize: "11px", marginLeft: "auto" }}>
+          Specification: Volatility 3 Specification
+        </span>
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: "8px", marginTop: "12px", borderBottom: "1px solid #1e293b", paddingBottom: "8px" }}>
+        <button
+          className={`ext-filter-btn ${activeTab === "processes" ? "active" : ""}`}
+          onClick={() => setActiveTab("processes")}
+        >
+          Processes ({allProcesses.length})
+        </button>
+        <button
+          className={`ext-filter-btn ${activeTab === "injections" ? "active" : ""}`}
+          onClick={() => setActiveTab("injections")}
+          style={allInjections.length > 0 ? { borderColor: "#f43f5e", color: activeTab === "injections" ? "#fff" : "#f43f5e" } : {}}
+        >
+          Code Injections ({allInjections.length})
+        </button>
+        <button
+          className={`ext-filter-btn ${activeTab === "lineages" ? "active" : ""}`}
+          onClick={() => setActiveTab("lineages")}
+          style={allLineages.length > 0 ? { borderColor: "#fb923c", color: activeTab === "lineages" ? "#fff" : "#fb923c" } : {}}
+        >
+          Anomalous Lineages ({allLineages.length})
+        </button>
+      </div>
+
+      {/* 1. Code Injections Tab */}
+      {activeTab === "injections" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "12px" }}>
+          {allInjections.map((inj: any, idx: number) => (
+            <div
+              key={idx}
+              style={{
+                background: "rgba(244, 63, 94, 0.08)",
+                border: "1px solid rgba(244, 63, 94, 0.3)",
+                borderRadius: "6px",
+                padding: "12px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{ color: "#f43f5e", fontSize: "14px" }}>💉</span>
+                  <strong style={{ color: "#f87171", fontSize: "13px" }}>
+                    {inj.process_name} (PID {inj.pid})
+                  </strong>
+                  <span style={{ fontSize: "10px", padding: "2px 6px", borderRadius: "4px", background: "rgba(244, 63, 94, 0.2)", color: "#f43f5e", fontWeight: 700 }}>
+                    {inj.severity || "CRITICAL"}
+                  </span>
+                </div>
+                <code style={{ fontSize: "11px", color: "#38bdf8" }}>{inj.address}</code>
+              </div>
+              <div style={{ fontSize: "11px", color: "#cbd5e1", marginBottom: "6px" }}>
+                {inj.description}
+              </div>
+              <div style={{ display: "flex", gap: "12px", fontSize: "11px" }}>
+                <span style={{ color: "#94a3b8" }}>Protection: <strong style={{ color: "#f87171" }}>{inj.protection}</strong></span>
+                <span style={{ color: "#94a3b8" }}>Payload Pattern: <strong style={{ color: "#38bdf8" }}>{inj.shellcode_signature}</strong></span>
+              </div>
+            </div>
+          ))}
+          {allInjections.length === 0 && (
+            <div style={{ textAlign: "center", padding: "32px", color: "#64748b" }}>
+              No injected RWX memory pages or shellcode payloads detected.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 2. Anomalous Lineages Tab */}
+      {activeTab === "lineages" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginTop: "12px" }}>
+          {allLineages.map((lin: any, idx: number) => (
+            <div
+              key={idx}
+              style={{
+                background: "rgba(251, 146, 60, 0.08)",
+                border: "1px solid rgba(251, 146, 60, 0.3)",
+                borderRadius: "6px",
+                padding: "12px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <strong style={{ color: "#fb923c", fontSize: "12px" }}>
+                  ⚠️ {lin.alert}
+                </strong>
+                <span style={{ fontSize: "10px", color: "#fb923c", fontWeight: 700 }}>CRITICAL LINEAGE</span>
+              </div>
+              <div style={{ color: "#cbd5e1", fontSize: "11px", marginTop: "6px" }}>
+                Parent: <code>{lin.parent_name} (PPID {lin.ppid})</code> &rarr; Child: <code>{lin.process_name} (PID {lin.pid})</code>
+              </div>
+            </div>
+          ))}
+          {allLineages.length === 0 && (
+            <div style={{ textAlign: "center", padding: "32px", color: "#64748b" }}>
+              No anomalous parent-child process relationships detected.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* 3. Processes Table Tab */}
+      {activeTab === "processes" && (
+        <>
+          <div className="result-filter-toolbar" style={{ marginTop: "12px" }}>
+            <input
+              type="text"
+              className="result-search-input"
+              placeholder="Search by process name, PID, or offset..."
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+            />
+          </div>
+
+          <div className="result-table-wrap">
+            <table className="result-table">
+              <thead>
+                <tr>
+                  <th>PID</th>
+                  <th>PPID</th>
+                  <th>Process Image</th>
+                  <th>Memory Offset</th>
+                  <th>Threads</th>
+                  <th>Start Time (UTC)</th>
+                  <th>Evasion Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredProcesses.map((p: any, idx: number) => (
+                  <tr key={idx} style={p.is_hidden ? { background: "rgba(239, 68, 68, 0.08)" } : {}}>
+                    <td><code>{p.pid}</code></td>
+                    <td><code>{p.ppid}</code></td>
+                    <td>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <strong>{p.image_name}</strong>
+                        {p.is_hidden && (
+                          <span style={{ fontSize: "9px", padding: "1px 4px", borderRadius: "3px", background: "#ef4444", color: "#fff", fontWeight: 700 }}>
+                            DKOM HIDDEN
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td><code>{p.virtual_offset}</code></td>
+                    <td>{p.threads}</td>
+                    <td><small className="mono-time">{p.start_time?.replace("T", " ")}</small></td>
+                    <td>
+                      {p.is_hidden ? (
+                        <span style={{ color: "#f87171", fontSize: "11px", fontWeight: 600 }}>
+                          ⚠️ Unlinked from ActiveProcessLinks
+                        </span>
+                      ) : (
+                        <span style={{ color: "#10b981", fontSize: "11px" }}>✓ Active Link</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function VerificationReportView({
+  report,
+  copyToClipboard,
+  copiedHash,
+}: {
+  report: any;
+  copyToClipboard: (text: string) => void;
+  copiedHash: string | null;
+}) {
+  const isVerified = report.status === "VERIFIED";
+  const records = report.verified_records || [];
+
+  return (
+    <div className="specialized-artifact-view">
+      <div className="result-summary-bar">
+        <span style={{ color: isVerified ? "#10b981" : "#ef4444", fontWeight: 700 }}>
+          {isVerified ? "✓ NIST CRYPTOGRAPHIC INTEGRITY VERIFIED" : "🚨 EVIDENCE CONTAMINATION DETECTED"}
+        </span>
+        <span>Total Verified: <strong>{report.total_checked}</strong></span>
+        <span>Mismatches: <strong style={{ color: report.mismatch_count > 0 ? "#ef4444" : "#10b981" }}>{report.mismatch_count}</strong></span>
+        <span style={{ color: "#38bdf8", fontSize: "11px", marginLeft: "auto" }}>
+          Standard: NIST SP 800-86
+        </span>
+      </div>
+
+      <div className="result-table-wrap" style={{ marginTop: "12px" }}>
+        <table className="result-table">
+          <thead>
+            <tr>
+              <th>Status</th>
+              <th>Artifact ID</th>
+              <th>Relative Path</th>
+              <th>SHA-256 Digest</th>
+            </tr>
+          </thead>
+          <tbody>
+            {records.map((rec: any, idx: number) => (
+              <tr key={idx}>
+                <td>
+                  <span style={{ padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: 700, background: rec.status === "VERIFIED" ? "rgba(16, 185, 129, 0.15)" : "rgba(239, 68, 68, 0.2)", color: rec.status === "VERIFIED" ? "#10b981" : "#ef4444" }}>
+                    {rec.status}
+                  </span>
+                </td>
+                <td><code>{rec.artifact_id}</code></td>
+                <td><code className="path-code">{rec.path}</code></td>
+                <td>
+                  <button
+                    className="hash-copy-btn"
+                    onClick={() => copyToClipboard(rec.sha256 || "")}
+                    title="Click to copy SHA-256 digest"
+                  >
+                    <code>{rec.sha256?.substring(0, 16)}...</code>
+                    <small>{copiedHash === rec.sha256 ? "✓" : "Copy"}</small>
+                  </button>
                 </td>
               </tr>
             ))}

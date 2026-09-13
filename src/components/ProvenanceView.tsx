@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useRef } from "react";
 import { Icon } from "./Icon";
 import type { RuntimeExecutionResponse } from "../api/runtimeClient";
 import type { FsNode } from "../types";
@@ -130,7 +130,12 @@ export function ProvenanceView({
           const v = res.value as Record<string, any>;
           const dest = v.relative_path || v.destination || "export.json";
           const ext = dest.split(".").pop()?.toUpperCase() || "JSON";
-          const sizeKb = v.size_bytes !== undefined ? (v.size_bytes / 1024).toFixed(1) + " KB" : "Unknown";
+          const sizeFormatted =
+            typeof v.size_bytes === "number"
+              ? v.size_bytes < 1024
+                ? `${v.size_bytes} B`
+                : `${(v.size_bytes / 1024).toFixed(1)} KB`
+              : "Unknown";
 
           list.push({
             id: `exp-${rIdx}-${resIdx}`,
@@ -139,10 +144,10 @@ export function ProvenanceView({
             path: v.file_path || v.destination || dest,
             scriptName: run.scriptName,
             format: ext,
-            size: sizeKb,
+            size: sizeFormatted,
             generatedAt: new Date().toLocaleTimeString(),
             description: `Forensic export artifact produced by procedure ${run.scriptName}`,
-            recordsCount: v.records_count || 1,
+            recordsCount: typeof v.records_count === "number" ? v.records_count : 0,
             sha256: v.sha256,
             previewData: v.preview,
             inputSources: [],
@@ -255,20 +260,74 @@ export function ProvenanceView({
     );
   }
 
-  // Layout coordinates for SVG wires
-  // Column 1 (Evidence): Left = 24px, Width = 260px -> Right port is at X = 284px, Y = 68px
-  const evidPortX = 284;
+  // Column Gap & Dynamic Positioning State
+  const [gap1, setGap1] = useState<number>(80);
+  const [gap2, setGap2] = useState<number>(80);
+  const col1Width = 260;
+  const col2Width = 200;
+  const col3Width = 220;
+
+  // Dragging state for column gutters
+  const dragRef = useRef<{ isDragging: boolean; target: "gap1" | "gap2" | null; startX: number; initialGap: number }>({
+    isDragging: false,
+    target: null,
+    startX: 0,
+    initialGap: 0,
+  });
+
+  const handleStartDrag = (target: "gap1" | "gap2", e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = {
+      isDragging: true,
+      target,
+      startX: e.clientX,
+      initialGap: target === "gap1" ? gap1 : gap2,
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onMouseMove = (ev: MouseEvent) => {
+      if (!dragRef.current.isDragging || !dragRef.current.target) return;
+      const delta = ev.clientX - dragRef.current.startX;
+      const nextGap = Math.max(30, Math.min(600, dragRef.current.initialGap + delta));
+      if (dragRef.current.target === "gap1") {
+        setGap1(nextGap);
+      } else {
+        setGap2(nextGap);
+      }
+    };
+
+    const onMouseUp = () => {
+      dragRef.current.isDragging = false;
+      dragRef.current.target = null;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
+
+  // Dynamic layout coordinates for SVG wires and columns
+  // Canvas padding is 24px
+  const col1Left = 24;
+  const col1Right = col1Left + col1Width;
+  const evidPortX = col1Right;
   const evidPortY = 68;
 
-  // Column 2 (Procedures): Left = 344px, Width = 200px
-  // InPort X = 344px, OutPort X = 544px
-  // Card index i center Y = 28px (header) + i * 72px + 28px = 56 + i * 72
+  // Column 2 (Active Procedures)
+  const col2Left = col1Right + gap1;
+  const col2Right = col2Left + col2Width;
   const getScriptY = (sIdx: number) => 56 + sIdx * 72;
 
-  // Column 3 (Exports): Left = 604px, Width = 220px
-  // InPort X = 604px
-  // Card index j center Y = 28px (header) + j * 72px + 28px = 56 + j * 72
+  // Column 3 (Export Deliverables)
+  const col3Left = col2Right + gap2;
+  const col3Right = col3Left + col3Width;
   const getExportY = (eIdx: number) => 56 + eIdx * 72;
+
+  const minCanvasWidth = col3Right + 60;
 
   return (
     <div className="provenance-view-container">
@@ -336,8 +395,35 @@ export function ProvenanceView({
           </span>
         </div>
 
-        <div className="topbar-right">
-          <button className="prov-btn secondary" onClick={() => setZoomLevel(100)}>
+        <div className="topbar-right" style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
+            <span style={{ fontSize: "10.5px", color: "#64748b" }}>Spacing:</span>
+            <button
+              className="prov-btn secondary"
+              style={{ padding: "2px 6px", fontSize: "10px" }}
+              onClick={() => { setGap1(40); setGap2(40); }}
+              title="Compact spacing between columns"
+            >
+              Compact
+            </button>
+            <button
+              className="prov-btn secondary"
+              style={{ padding: "2px 6px", fontSize: "10px" }}
+              onClick={() => { setGap1(80); setGap2(80); }}
+              title="Standard balanced spacing"
+            >
+              Default
+            </button>
+            <button
+              className="prov-btn secondary"
+              style={{ padding: "2px 6px", fontSize: "10px" }}
+              onClick={() => { setGap1(160); setGap2(160); }}
+              title="Wide spacing for deep graph inspection"
+            >
+              Wide
+            </button>
+          </div>
+          <button className="prov-btn secondary" onClick={() => { setZoomLevel(100); setGap1(80); setGap2(80); }}>
             Fit to View
           </button>
         </div>
@@ -354,9 +440,9 @@ export function ProvenanceView({
             </p>
           </div>
 
-          <div className="mapping-grid" style={{ display: "flex", gap: "60px", position: "relative", minHeight: "520px" }}>
+          <div className="mapping-grid" style={{ display: "flex", position: "relative", minHeight: "520px", minWidth: `${minCanvasWidth}px` }}>
             {/* Column 1: Evidence Hierarchy */}
-            <div className="mapping-column evidence-column" style={{ width: "260px", flexShrink: 0, zIndex: 2 }}>
+            <div className="mapping-column evidence-column" style={{ width: `${col1Width}px`, flexShrink: 0, zIndex: 2 }}>
               <div className="evidence-root-card" style={{ background: "#0d1520", border: "1px solid #1e293b", borderRadius: "8px", padding: "12px", marginBottom: "12px", position: "relative" }}>
                 <div className="evidence-card-header" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "10px" }}>
                   <div className="card-icon-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -429,6 +515,43 @@ export function ProvenanceView({
               </div>
             </div>
 
+            {/* Interactive Column 1 -> 2 Drag Divider Handle */}
+            <div
+              className="col-drag-gutter"
+              onMouseDown={(e) => handleStartDrag("gap1", e)}
+              style={{
+                width: `${gap1}px`,
+                flexShrink: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "col-resize",
+                position: "relative",
+                zIndex: 4,
+              }}
+              title="Drag horizontally to move procedure column and stretch wires"
+            >
+              <div
+                style={{
+                  padding: "3px 8px",
+                  borderRadius: "10px",
+                  background: "rgba(15, 23, 42, 0.85)",
+                  border: "1px solid #334155",
+                  color: "#94a3b8",
+                  fontSize: "9px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                  userSelect: "none",
+                  pointerEvents: "none",
+                }}
+              >
+                <span>‹</span>
+                <span style={{ fontFamily: "monospace" }}>{gap1}px</span>
+                <span>›</span>
+              </div>
+            </div>
+
             {/* SVG Connecting Flow Lines between Column 1 -> 2 -> 3 */}
             <svg
               className="flow-lines-overlay"
@@ -448,7 +571,7 @@ export function ProvenanceView({
                 const isSelectedScript = selectedScriptId === sc.scriptName || selectedExport?.scriptName === sc.scriptName;
                 const x1 = evidPortX;
                 const y1 = evidPortY;
-                const x2 = 344; // Left of Column 2
+                const x2 = col2Left;
                 const y2 = getScriptY(sIdx);
                 const dx = x2 - x1;
                 const cx1 = x1 + dx * 0.5;
@@ -485,9 +608,9 @@ export function ProvenanceView({
                 const sIdx = uniqueScripts.findIndex((s) => s.scriptName === exp.scriptName);
                 if (sIdx < 0) return null;
 
-                const x1 = 544; // Right of Column 2
+                const x1 = col2Right;
                 const y1 = getScriptY(sIdx);
-                const x2 = 604; // Left of Column 3
+                const x2 = col3Left;
                 const y2 = getExportY(eIdx);
                 const dx = x2 - x1;
                 const cx1 = x1 + dx * 0.5;
@@ -526,7 +649,7 @@ export function ProvenanceView({
             </svg>
 
             {/* Column 2: Script Cards */}
-            <div className="mapping-column scripts-column" style={{ width: "200px", flexShrink: 0, zIndex: 2, display: "flex", flexDirection: "column", gap: "16px" }}>
+            <div className="mapping-column scripts-column" style={{ width: `${col2Width}px`, flexShrink: 0, zIndex: 2, display: "flex", flexDirection: "column", gap: "16px" }}>
               <div style={{ fontSize: "10px", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.05em", color: "#818cf8", height: "16px", lineHeight: "16px" }}>
                 Active Procedures ({uniqueScripts.length})
               </div>
@@ -539,7 +662,7 @@ export function ProvenanceView({
                     className={`script-flow-card ${isSelected ? "selected-script" : ""}`}
                     onClick={() => {
                       setSelectedScriptId(sc.scriptName);
-                      if (onSelectDoc) onSelectDoc(sc.scriptName);
+                      if (onSelectDoc) onSelectDoc(sc.docPath || sc.scriptName);
                     }}
                     style={{
                       background: isSelected ? "rgba(129, 140, 248, 0.14)" : "#0d1520",
@@ -572,8 +695,45 @@ export function ProvenanceView({
               })}
             </div>
 
+            {/* Interactive Column 2 -> 3 Drag Divider Handle */}
+            <div
+              className="col-drag-gutter"
+              onMouseDown={(e) => handleStartDrag("gap2", e)}
+              style={{
+                width: `${gap2}px`,
+                flexShrink: 0,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                cursor: "col-resize",
+                position: "relative",
+                zIndex: 4,
+              }}
+              title="Drag horizontally to move exports column and stretch wires"
+            >
+              <div
+                style={{
+                  padding: "3px 8px",
+                  borderRadius: "10px",
+                  background: "rgba(15, 23, 42, 0.85)",
+                  border: "1px solid #334155",
+                  color: "#94a3b8",
+                  fontSize: "9px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "4px",
+                  userSelect: "none",
+                  pointerEvents: "none",
+                }}
+              >
+                <span>‹</span>
+                <span style={{ fontFamily: "monospace" }}>{gap2}px</span>
+                <span>›</span>
+              </div>
+            </div>
+
             {/* Column 3: Export Artifacts */}
-            <div className="mapping-column exports-column" style={{ width: "220px", flexShrink: 0, zIndex: 2, display: "flex", flexDirection: "column", gap: "16px" }}>
+            <div className="mapping-column exports-column" style={{ width: `${col3Width}px`, flexShrink: 0, zIndex: 2, display: "flex", flexDirection: "column", gap: "16px" }}>
               <div style={{ fontSize: "10px", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.05em", color: "#34d399", height: "16px", lineHeight: "16px" }}>
                 Export Deliverables ({dynamicExports.length})
               </div>
@@ -616,7 +776,7 @@ export function ProvenanceView({
                           {exp.name}
                         </strong>
                         <span style={{ fontSize: "10px", color: "#64748b" }}>
-                          {exp.type} · {exp.size}
+                          {exp.type} · {exp.size} · {exp.recordsCount === 0 ? "0 records (empty)" : `${exp.recordsCount} record${exp.recordsCount > 1 ? "s" : ""}`}
                         </span>
                       </div>
                     </div>
@@ -701,7 +861,9 @@ export function ProvenanceView({
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
                       <span style={{ color: "#64748b" }}>Records</span>
-                      <strong style={{ color: "#f8fafc" }}>{selectedExport.recordsCount}</strong>
+                      <strong style={{ color: selectedExport.recordsCount === 0 ? "#94a3b8" : "#f8fafc" }}>
+                        {selectedExport.recordsCount === 0 ? "0 (Empty Deliverable)" : selectedExport.recordsCount}
+                      </strong>
                     </div>
                     <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "6px" }}>
                       <span style={{ color: "#64748b" }}>Size</span>
@@ -749,11 +911,24 @@ export function ProvenanceView({
 
               {activeTab === "preview" && (
                 <div className="preview-code-view">
-                  <pre style={{ margin: 0, padding: "10px", background: "#090d14", border: "1px solid #1e293b", borderRadius: "6px", fontSize: "10.5px", color: "#cbd5e1", maxHeight: "360px", overflow: "auto", fontFamily: "monospace" }}>
-                    {selectedExport.previewData
-                      ? JSON.stringify(selectedExport.previewData, null, 2)
-                      : JSON.stringify({ file: selectedExport.name, status: "exported", records_count: selectedExport.recordsCount, sha256: selectedExport.sha256 }, null, 2)}
-                  </pre>
+                  {selectedExport.recordsCount === 0 || (Array.isArray(selectedExport.previewData) && selectedExport.previewData.length === 0) ? (
+                    <div style={{ padding: "20px 16px", background: "#090d14", border: "1px dashed #334155", borderRadius: "6px", textAlign: "center" }}>
+                      <div style={{ fontSize: "24px", marginBottom: "8px" }}>📭</div>
+                      <strong style={{ display: "block", fontSize: "12px", color: "#f8fafc", marginBottom: "4px" }}>
+                        Zero Matching Records (0 records)
+                      </strong>
+                      <p style={{ fontSize: "11px", color: "#94a3b8", lineHeight: 1.5, margin: "0 0 10px 0" }}>
+                        This forensic operation executed successfully with 0 records matching the filter criteria (e.g. no .pf prefetch binaries or matching threat signatures in this evidence collection). The deliverable was serialized on disk as an empty JSON array <code>[]</code>.
+                      </p>
+                      <code style={{ fontSize: "10px", color: "#64748b", background: "#06090e", padding: "4px 8px", borderRadius: "4px", border: "1px solid #1e293b" }}>
+                        [] (2 bytes)
+                      </code>
+                    </div>
+                  ) : (
+                    <pre style={{ margin: 0, padding: "10px", background: "#090d14", border: "1px solid #1e293b", borderRadius: "6px", fontSize: "10.5px", color: "#cbd5e1", maxHeight: "360px", overflow: "auto", fontFamily: "monospace" }}>
+                      {JSON.stringify(selectedExport.previewData ?? { file: selectedExport.name, status: "exported", records_count: selectedExport.recordsCount, sha256: selectedExport.sha256 }, null, 2)}
+                    </pre>
+                  )}
                 </div>
               )}
             </div>
